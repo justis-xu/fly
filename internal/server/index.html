@@ -1,0 +1,291 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>fly</title>
+<style>
+  :root {
+    --bg: #0f1420; --card: #171e2e; --card2: #1d2639; --line: #263049;
+    --fg: #e5eaf3; --dim: #8b96ab; --acc: #4f8cff; --ok: #34c77b; --warn: #e6a23c; --bad: #e05656;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg); color: var(--fg); min-height: 100vh;
+    font: 14px/1.6 -apple-system, "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+    padding: 20px clamp(12px, 4vw, 40px) 60px;
+  }
+  .wrap { max-width: 860px; margin: 0 auto; }
+  header { display: flex; align-items: center; gap: 14px; margin-bottom: 16px; flex-wrap: wrap; }
+  .logo { font-size: 22px; font-weight: 700; letter-spacing: 1px; }
+  .logo span { color: var(--acc); }
+  .subinfo { color: var(--dim); font-size: 12.5px; display: flex; gap: 14px; flex-wrap: wrap; align-items: center; }
+  .subinfo b { color: var(--fg); font-weight: 600; }
+  .bar { width: 90px; height: 5px; border-radius: 3px; background: var(--line); overflow: hidden; }
+  .bar i { display: block; height: 100%; background: linear-gradient(90deg, var(--acc), #7db1ff); }
+  .toolbar { display: flex; gap: 10px; margin-bottom: 14px; flex-wrap: wrap; }
+  button, .btn {
+    border: 1px solid var(--line); background: var(--card); color: var(--fg);
+    padding: 7px 16px; border-radius: 8px; font-size: 13px; cursor: pointer; text-decoration: none;
+    transition: all .15s;
+  }
+  button:hover { border-color: var(--acc); }
+  button:disabled { opacity: .5; cursor: wait; }
+  button.primary { background: var(--acc); border-color: var(--acc); color: #fff; }
+  input#q {
+    flex: 1; min-width: 160px; background: var(--card); border: 1px solid var(--line);
+    color: var(--fg); border-radius: 8px; padding: 7px 14px; font-size: 13px; outline: none;
+  }
+  input#q:focus { border-color: var(--acc); }
+  .notice {
+    display: none; background: rgba(224,86,86,.12); border: 1px solid rgba(224,86,86,.4);
+    color: #f0a1a1; border-radius: 8px; padding: 8px 14px; margin-bottom: 12px; font-size: 12.5px;
+  }
+  .notice.info { background: rgba(79,140,255,.1); border-color: rgba(79,140,255,.35); color: #a9c6ff; }
+  ul#nodes { list-style: none; display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 8px; }
+  li.node {
+    background: var(--card); border: 1px solid var(--line); border-radius: 10px;
+    padding: 10px 12px; cursor: pointer; display: flex; align-items: center; gap: 10px;
+    transition: all .15s; overflow: hidden;
+  }
+  li.node:hover { border-color: var(--acc); transform: translateY(-1px); }
+  li.node.active { border-color: var(--acc); background: linear-gradient(135deg, rgba(79,140,255,.16), var(--card)); }
+  .badge {
+    min-width: 52px; text-align: center; font-size: 11px; font-weight: 600; padding: 2px 7px;
+    border-radius: 20px; flex-shrink: 0; font-variant-numeric: tabular-nums;
+  }
+  .b-ok { background: rgba(52,199,123,.15); color: var(--ok); }
+  .b-warn { background: rgba(230,162,60,.15); color: var(--warn); }
+  .b-bad { background: rgba(224,86,86,.15); color: var(--bad); }
+  .b-na { background: var(--line); color: var(--dim); }
+  .b-testing { background: rgba(79,140,255,.15); color: var(--acc); animation: blink 1s infinite; }
+  @keyframes blink { 50% { opacity: .4; } }
+  .name { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 13px; }
+  .tag { font-size: 10px; color: var(--dim); border: 1px solid var(--line); padding: 0 6px; border-radius: 4px; flex-shrink: 0; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--acc); flex-shrink: 0; box-shadow: 0 0 8px var(--acc); }
+  footer { margin-top: 22px; color: var(--dim); font-size: 12px; text-align: center; }
+  footer code { background: var(--card); padding: 1px 7px; border-radius: 5px; }
+  .spin { display: inline-block; width: 12px; height: 12px; border: 2px solid var(--acc); border-top-color: transparent; border-radius: 50%; animation: rot .7s linear infinite; vertical-align: -2px; margin-right: 5px; }
+  @keyframes rot { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="logo">f<span>l</span>y</div>
+    <div class="subinfo" id="subinfo">加载中…</div>
+  </header>
+
+  <div class="notice" id="notice"></div>
+
+  <div class="toolbar">
+    <input id="q" type="search" placeholder="搜索节点…">
+    <button id="btn-test" class="primary">⚡ 一键测速</button>
+    <button id="btn-update">↻ 更新订阅</button>
+    <button id="btn-sub">⚙ 订阅设置</button>
+    <a class="btn" id="btn-panel" href="/panel/" target="_blank">▦ 完整面板</a>
+  </div>
+
+  <div id="modal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,.55); z-index:10; align-items:center; justify-content:center;">
+    <div style="background:var(--card2); border:1px solid var(--line); border-radius:12px; padding:22px; width:min(520px,92vw);">
+      <div style="font-weight:600; margin-bottom:6px;">订阅设置</div>
+      <div style="color:var(--dim); font-size:12px; margin-bottom:12px;">修改后立即保存并刷新节点，当前选择尽量保留</div>
+      <input id="sub-url" style="width:100%; background:var(--card); border:1px solid var(--line); color:var(--fg); border-radius:8px; padding:8px 12px; font-size:13px; outline:none;" placeholder="https://…">
+      <div style="display:flex; gap:10px; margin-top:16px; justify-content:flex-end;">
+        <button id="sub-cancel">取消</button>
+        <button id="sub-save" class="primary">保存并刷新</button>
+      </div>
+    </div>
+  </div>
+
+  <ul id="nodes"></ul>
+
+  <footer id="foot"></footer>
+</div>
+
+<script>
+const GROUP = '🚀 Proxy', AUTO = '♻️ 自动选择';
+let ctrl = null, proxies = {}, group = null, testing = false;
+
+const $ = s => document.querySelector(s);
+const gb = n => (n / 1073741824).toFixed(1);
+const esc = s => s.replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+async function api(path, opt) {
+  const r = await fetch(path, opt);
+  if (!r.ok) throw new Error(r.status + ' ' + await r.text());
+  return r.json();
+}
+async function ctl(path, opt) {
+  opt = Object.assign({ headers: {} }, opt);
+  opt.headers['Authorization'] = 'Bearer ' + ctrl.secret;
+  return fetch(`http://${ctrl.host}:${ctrl.port}${path}`, opt);
+}
+
+function badgeHTML(d) {
+  if (d === 'testing') return '<span class="badge b-testing">测速</span>';
+  if (!d || d <= 0) return '<span class="badge b-na">--</span>';
+  const cls = d < 300 ? 'b-ok' : d < 1000 ? 'b-warn' : 'b-bad';
+  return `<span class="badge ${cls}">${d}ms</span>`;
+}
+function delayOf(name) {
+  const h = proxies[name] && proxies[name].history;
+  return h && h.length ? h[h.length - 1].delay : 0;
+}
+
+async function loadInfo() {
+  const info = await api('/api/info');
+  ctrl = info.controller;
+  if (info.starting) {
+    $('#subinfo').innerHTML = '启动中，正在拉取订阅…';
+    $('#foot').innerHTML = `代理端口 <code>127.0.0.1:${info.proxy_port}</code>`;
+    setTimeout(loadAll, 3000);
+    return info;
+  }
+  const bits = [];
+  if (info.subscription) {
+    const s = info.subscription;
+    if (s.total > 0) {
+      const pct = Math.min(100, s.used / s.total * 100);
+      bits.push(`流量 <b>${gb(s.used)} / ${gb(s.total)} GB</b> <span class="bar"><i style="width:${pct}%"></i></span>`);
+    }
+    if (s.expire > 0) {
+      const d = new Date(s.expire * 1000), days = Math.floor((d - Date.now()) / 864e5);
+      const fmt = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+      bits.push(`到期 <b>${fmt}</b>（${days} 天）`);
+    }
+  }
+  if (info.nodes) bits.push(`节点 <b>${info.nodes}</b>`);
+  bits.push(`当前 <b>${esc(info.current || '…')}</b>`);
+  $('#subinfo').innerHTML = bits.join('');
+  const n = $('#notice');
+  if (info.last_err) { n.className = 'notice'; n.style.display = 'block'; n.textContent = '订阅拉取失败，当前使用本地缓存：' + info.last_err; }
+  else if (info.update_err) { n.className = 'notice'; n.style.display = 'block'; n.textContent = '上次更新订阅失败：' + info.update_err; }
+  else if (info.updating) { n.className = 'notice info'; n.style.display = 'block'; n.innerHTML = '<span class="spin"></span>正在更新订阅…'; }
+  else n.style.display = 'none';
+  $('#btn-panel').href = `/panel/#/?hostname=${ctrl.host}&port=${ctrl.port}&secret=${encodeURIComponent(ctrl.secret)}`;
+  $('#foot').innerHTML = `代理端口 <code>127.0.0.1:${info.proxy_port}</code> · 浏览器代理插件指向它即可`;
+  if (info.updating) setTimeout(pollUpdating, 1500);
+  return info;
+}
+
+function pollUpdating() {
+  api('/api/info').then(info => {
+    if (info.updating) { setTimeout(pollUpdating, 1500); return; }
+    loadAll();
+  }).catch(() => {});
+}
+
+async function loadProxies() {
+  const r = await ctl('/proxies');
+  const d = await r.json();
+  proxies = d.proxies || {};
+  group = proxies[GROUP];
+  render();
+}
+
+function render() {
+  if (!group) return;
+  const q = $('#q').value.trim().toLowerCase();
+  const cur = group.now;
+  const items = [];
+  for (const name of group.all) {
+    if (q && !name.toLowerCase().includes(q)) continue;
+    const p = proxies[name] || {};
+    const isGroup = p.type === 'Selector' || p.type === 'URLTest' || p.type === 'Fallback';
+    const isDirect = name === 'DIRECT';
+    const delay = name === AUTO && p.now ? null : (p.history && p.history.length ? p.history[p.history.length-1].delay : 0);
+    let badge;
+    if (name === AUTO) {
+      const best = proxies[p.now];
+      badge = `<span class="badge b-ok">auto</span>`;
+    } else if (isDirect) {
+      badge = `<span class="badge b-na">直连</span>`;
+    } else {
+      badge = badgeHTML(testing && !delay ? 'testing' : delay);
+    }
+    const tag = isGroup ? '<span class="tag">组</span>' : '';
+    const dot = name === cur ? '<span class="dot"></span>' : '';
+    const extra = name === AUTO && p.now ? `<span class="tag">${esc(p.now)}</span>` : '';
+    items.push(`<li class="node ${name === cur ? 'active' : ''}" data-name="${esc(name)}">${badge}<span class="name">${dot}${esc(name)}</span>${extra}${tag}</li>`);
+  }
+  $('#nodes').innerHTML = items.join('') || '<li style="color:var(--dim)">没有匹配的节点</li>';
+  $('#nodes').querySelectorAll('li.node').forEach(el => el.onclick = () => switchTo(el.dataset.name));
+}
+
+async function switchTo(name) {
+  if (name === group.now) return;
+  const r = await ctl('/proxies/' + encodeURIComponent(GROUP), {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name })
+  });
+  if (r.ok) { group.now = name; render(); loadInfo(); }
+}
+
+async function testAll() {
+  if (testing) return;
+  testing = true; render();
+  try {
+    const r = await ctl(`/group/${encodeURIComponent(GROUP)}/delay?url=${encodeURIComponent('https://www.gstatic.com/generate_204')}&timeout=3000`);
+    const map = await r.json();
+    for (const [name, d] of Object.entries(map)) {
+      if (proxies[name]) proxies[name].history = [{ delay: d }];
+    }
+    const alive = Object.keys(map).filter(k => map[k] > 0).length;
+    const n = $('#notice');
+    n.className = 'notice info'; n.style.display = 'block';
+    n.textContent = `测速完成：${alive} / ${group.all.length} 个可用`;
+    setTimeout(() => { if (!testing) n.style.display = 'none'; }, 5000);
+  } catch (e) { console.error(e); }
+  testing = false; render();
+}
+
+async function updateSub() {
+  const btn = $('#btn-update');
+  btn.disabled = true;
+  try {
+    await api('/api/update', { method: 'POST' });
+    pollUpdating();
+  } catch (e) { alert('更新失败: ' + e.message); }
+  btn.disabled = false;
+}
+
+async function loadAll() { try { await loadInfo(); } catch (e) {} try { await loadProxies(); } catch (e) {} }
+
+$('#btn-test').onclick = testAll;
+$('#btn-update').onclick = updateSub;
+$('#q').oninput = render;
+
+const modal = $('#modal');
+$('#btn-sub').onclick = async () => {
+  try { const d = await api('/api/subscription'); $('#sub-url').value = d.url; } catch (e) {}
+  modal.style.display = 'flex';
+};
+$('#sub-cancel').onclick = () => modal.style.display = 'none';
+modal.onclick = e => { if (e.target === modal) modal.style.display = 'none'; };
+$('#sub-save').onclick = async () => {
+  const url = $('#sub-url').value.trim();
+  if (!/^https?:\/\//.test(url)) { alert('订阅地址需以 http(s):// 开头'); return; }
+  const btn = $('#sub-save'); btn.disabled = true;
+  try {
+    const r = await fetch('/api/subscription', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url })
+    });
+    if (!r.ok) { alert('保存失败: ' + (await r.text())); return; }
+    modal.style.display = 'none';
+    const n = $('#notice');
+    n.className = 'notice info'; n.style.display = 'block';
+    n.innerHTML = '<span class="spin"></span>订阅已更新，正在刷新…';
+    pollUpdating();
+  } catch (e) { alert('保存失败: ' + e.message); }
+  btn.disabled = false;
+};
+
+loadAll().then(() => {
+  const hasDelay = group && group.all.some(n => proxies[n] && proxies[n].history && proxies[n].history.length);
+  if (!hasDelay) testAll();
+});
+</script>
+</body>
+</html>
