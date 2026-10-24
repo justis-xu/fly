@@ -8,3 +8,6 @@ var GeoMetadb []byte
 
 //go:embed GeoSite.dat
 var GeoSiteDat []byte
+
+//go:embed ASN.mmdb
+var ASNMMDB []byte

@@ -1,41 +1,29 @@
 package config
 
 import (
-	"crypto/rand"
-	"encoding/hex"
+	"fmt"
+	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 
 	"gopkg.in/yaml.v3"
 )
 
-// DefaultSubscriptionURL 测试用订阅（NCloud）。
-const DefaultSubscriptionURL = "https://api-a.microconsub.com/sd/fb5f64b4603d003ae4768b2c00fd6db5"
-
 type Config struct {
 	SubscriptionURL string `yaml:"subscription-url"`
 	MixedPort       int    `yaml:"mixed-port"`
-	ControllerAddr  string `yaml:"controller-addr"`
 	AdminAddr       string `yaml:"admin-addr"`
-	Secret          string `yaml:"secret"`
 	RefreshHours    int    `yaml:"refresh-hours"`
 }
 
 func Default(dataDir string) *Config {
 	return &Config{
-		SubscriptionURL: DefaultSubscriptionURL,
+		SubscriptionURL: "",
 		MixedPort:       7888,
-		ControllerAddr:  "127.0.0.1:9090",
 		AdminAddr:       "127.0.0.1:7889",
-		Secret:          randomSecret(),
 		RefreshHours:    24,
 	}
-}
-
-func randomSecret() string {
-	b := make([]byte, 16)
-	_, _ = rand.Read(b)
-	return hex.EncodeToString(b)
 }
 
 // Load 读取 dataDir/fly.yaml；不存在则写入默认配置。
@@ -59,16 +47,38 @@ func Load(dataDir string) (*Config, error) {
 	if err := yaml.Unmarshal(b, c); err != nil {
 		return nil, err
 	}
-	if c.Secret == "" {
-		c.Secret = randomSecret()
+	if err := c.Validate(); err != nil {
+		return nil, err
 	}
 	return c, nil
 }
 
 func Save(dataDir string, c *Config) error {
+	if err := c.Validate(); err != nil {
+		return err
+	}
 	b, err := yaml.Marshal(c)
 	if err != nil {
 		return err
 	}
 	return os.WriteFile(filepath.Join(dataDir, "fly.yaml"), b, 0o600)
+}
+
+func (c *Config) Validate() error {
+	if c.MixedPort < 1 || c.MixedPort > 65535 {
+		return fmt.Errorf("代理端口须在 1–65535 之间")
+	}
+	host, port, err := net.SplitHostPort(c.AdminAddr)
+	ip := net.ParseIP(host)
+	if err != nil || ip == nil || !ip.IsLoopback() {
+		return fmt.Errorf("管理地址须使用本机回环 IP 和端口，例如 127.0.0.1:7889")
+	}
+	n, err := strconv.Atoi(port)
+	if err != nil || n < 1 || n > 65535 || n == c.MixedPort {
+		return fmt.Errorf("管理端口无效或与代理端口重复")
+	}
+	if c.RefreshHours < 1 || c.RefreshHours > 8760 {
+		return fmt.Errorf("订阅更新间隔须在 1–8760 小时之间")
+	}
+	return nil
 }

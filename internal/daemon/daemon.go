@@ -60,6 +60,9 @@ func portOpen(addr string) bool {
 
 // Detach fork 自身进入后台，等待控制台端口就绪。
 func Detach(dataDir, adminAddr string) error {
+	if portOpen(adminAddr) {
+		return fmt.Errorf("管理端口 %s 已被占用", adminAddr)
+	}
 	exe, err := os.Executable()
 	if err != nil {
 		return err

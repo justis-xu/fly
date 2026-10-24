@@ -17,14 +17,14 @@ const fetchUA = "clash.meta/fly"
 
 // Info 来自订阅响应头 subscription-userinfo。
 type Info struct {
-	Upload   int64     `json:"upload"`
-	Download int64     `json:"download"`
-	Total    int64     `json:"total"`
-	Expire   int64     `json:"expire"`
+	Upload    int64     `json:"upload"`
+	Download  int64     `json:"download"`
+	Total     int64     `json:"total"`
+	Expire    int64     `json:"expire"`
 	FetchedAt time.Time `json:"fetched_at"`
 }
 
-func (i *Info) Used() int64     { return i.Upload + i.Download }
+func (i *Info) Used() int64 { return i.Upload + i.Download }
 func (i *Info) ExpireTime() time.Time {
 	if i.Expire <= 0 {
 		return time.Time{}
@@ -123,22 +123,34 @@ func BodyToLinks(body []byte) (linksText string, yamlProxies []map[string]any, y
 
 var builtinPolicies = map[string]bool{
 	"DIRECT": true, "REJECT": true, "REJECT-DROP": true,
-	"PASS": true, "COMPATIBLE": true, "GLOBAL": true,
+	"PASS": true, "PASS-RULE": true, "COMPATIBLE": true, "GLOBAL": true,
 }
 
 // RewriteRules 采用订阅自带规则：把指向订阅分组的目标改写为主选择组，
-// 跳过需要外部资源的 RULE-SET/SUB-RULE，并保证以 MATCH 结尾。
+// 保留 RULE-SET/SUB-RULE，并保证以 MATCH 结尾。
 func RewriteRules(rules []string, target string) []string {
+	return rewriteRules(rules, target, true)
+}
+
+func RewriteSubRules(rules []string, target string) []string {
+	return rewriteRules(rules, target, false)
+}
+
+func rewriteRules(rules []string, target string, catchAll bool) []string {
 	out := make([]string, 0, len(rules)+1)
 	hasMatch := false
 	for _, r := range rules {
 		parts := strings.Split(strings.TrimSpace(r), ",")
+		for i := range parts {
+			parts[i] = strings.TrimSpace(parts[i])
+		}
 		if len(parts) == 0 || parts[0] == "" {
 			continue
 		}
 		typ := strings.ToUpper(strings.TrimSpace(parts[0]))
 		switch typ {
-		case "RULE-SET", "SUB-RULE":
+		case "SUB-RULE":
+			out = append(out, strings.Join(parts, ","))
 			continue
 		case "MATCH":
 			if len(parts) == 2 && !builtinPolicies[parts[1]] {
@@ -152,7 +164,7 @@ func RewriteRules(rules []string, target string) []string {
 			continue
 		}
 		last := len(parts) - 1
-		if parts[last] == "no-resolve" || parts[last] == "src" {
+		for last > 0 && (parts[last] == "no-resolve" || parts[last] == "src") {
 			last--
 		}
 		if last > 0 && !builtinPolicies[parts[last]] {
@@ -160,7 +172,7 @@ func RewriteRules(rules []string, target string) []string {
 		}
 		out = append(out, strings.Join(parts, ","))
 	}
-	if !hasMatch {
+	if catchAll && !hasMatch {
 		out = append(out, "MATCH,"+target)
 	}
 	return out

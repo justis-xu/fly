@@ -63,7 +63,10 @@ func main() {
 }
 
 func usage() {
-	fmt.Print(`fly — 轻量本地代理
+	fmt.Print(`fly — 配合 Proxy Switcher 使用的本地代理服务器
+
+浏览器流量路径: Proxy Switcher → 127.0.0.1:7888 → fly → 订阅节点
+管理网页: http://127.0.0.1:7889（默认）
 
 用法:
   fly            后台启动（守护进程）
@@ -96,8 +99,7 @@ func cmdStart() {
 		fmt.Printf("fly 已在运行（pid %d），控制台 http://%s\n", pid, a.Cfg.AdminAddr)
 		return
 	}
-	proxyAddr := fmt.Sprintf("127.0.0.1:%d", a.Cfg.MixedPort)
-	if err := daemon.Detach(a.Dir, proxyAddr); err != nil {
+	if err := daemon.Detach(a.Dir, a.Cfg.AdminAddr); err != nil {
 		fatal(err)
 	}
 	fmt.Printf("fly 已在后台启动\n控制台: http://%s   日志: %s\n", a.Cfg.AdminAddr, filepath.Join(a.Dir, "fly.log"))
@@ -115,22 +117,19 @@ func serve(daemonized bool) {
 	if err := core.Init(a.Dir); err != nil {
 		fatal(err)
 	}
-	a.SetStarting(true)
+	a.SetStarting(a.SubscriptionURL() != "")
 	srv := server.New(a, version)
-	go func() {
-		if err := srv.ListenAndServe(); err != nil {
-			fmt.Fprintln(os.Stderr, "控制台启动失败:", err)
-		}
-	}()
-	if err := a.LoadSubscription(); err != nil {
-		fatal(err)
+	if err := srv.Start(); err != nil {
+		fatal(fmt.Errorf("管理端口启动失败: %w", err))
 	}
-	if err := a.StartCore(); err != nil {
-		fatal(err)
+	if err := a.Initialize(); err != nil {
+		fmt.Fprintln(os.Stderr, "订阅未就绪，可在管理网页修改地址:", err)
 	}
-	a.SetStarting(false)
 	go func() {
 		for range time.Tick(time.Duration(a.Cfg.RefreshHours) * time.Hour) {
+			if a.SubscriptionURL() == "" {
+				continue
+			}
 			if err := a.Refresh(); err != nil {
 				fmt.Println("定时刷新订阅失败:", err)
 			}
@@ -140,11 +139,13 @@ func serve(daemonized bool) {
 		info, nodes, skipped, lastErr := a.Snapshot()
 		fmt.Printf("订阅解析: %d 个节点（跳过 %d）\n", nodes, skipped)
 		if lastErr != "" {
-			fmt.Printf("[警告] 使用本地缓存: %s\n", lastErr)
+			fmt.Printf("[警告] 订阅未就绪或正在使用缓存: %s\n", lastErr)
 		}
 		fmt.Printf("代理 http://127.0.0.1:%d · 控制台 http://%s （Ctrl+C 退出）\n", a.Cfg.MixedPort, a.Cfg.AdminAddr)
-		if t := info.ExpireTime(); !t.IsZero() {
-			fmt.Printf("订阅到期: %s\n", t.Format("2006-01-02"))
+		if info != nil {
+			if t := info.ExpireTime(); !t.IsZero() {
+				fmt.Printf("订阅到期: %s\n", t.Format("2006-01-02"))
+			}
 		}
 	}
 	sigs := make(chan os.Signal, 1)
@@ -194,12 +195,18 @@ func cmdUpdate() {
 	if err != nil {
 		fatal(fmt.Errorf("无法连接 fly（是否在运行？）: %w", err))
 	}
+	if resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 8192))
+		resp.Body.Close()
+		fatal(fmt.Errorf("更新失败: %s", body))
+	}
 	resp.Body.Close()
 	fmt.Print("正在刷新订阅")
 	for i := 0; i < 60; i++ {
 		time.Sleep(2 * time.Second)
 		fmt.Print(".")
 		var info struct {
+			LastErr   string `json:"last_err"`
 			Updating  bool   `json:"updating"`
 			UpdateErr string `json:"update_err"`
 			Nodes     int    `json:"nodes"`
@@ -208,6 +215,10 @@ func cmdUpdate() {
 		if err := getJSON("http://"+a.Cfg.AdminAddr+"/api/info", &info); err == nil {
 			if !info.Updating {
 				fmt.Println()
+				if info.LastErr != "" {
+					fmt.Println("刷新失败，继续使用缓存:", info.LastErr)
+					os.Exit(1)
+				}
 				if info.UpdateErr != "" {
 					fmt.Println("刷新失败:", info.UpdateErr)
 					os.Exit(1)
@@ -231,18 +242,16 @@ func cmdStatus() {
 	}
 	fmt.Printf("状态: 运行中（pid %d）\n", pid)
 	var info struct {
-		ProxyPort  int    `json:"proxy_port"`
-		Nodes      int    `json:"nodes"`
-		Current    string `json:"current"`
-		AutoNow    string `json:"auto_now"`
-		LastErr    string `json:"last_err"`
-		UpdateErr  string `json:"update_err"`
-		Updating   bool   `json:"updating"`
-		Starting   bool   `json:"starting"`
-		Controller struct {
-			Host string `json:"host"`
-			Port int    `json:"port"`
-		} `json:"controller"`
+		ProxyPort    int    `json:"proxy_port"`
+		Nodes        int    `json:"nodes"`
+		Current      string `json:"current"`
+		AutoNow      string `json:"auto_now"`
+		LastErr      string `json:"last_err"`
+		UpdateErr    string `json:"update_err"`
+		Updating     bool   `json:"updating"`
+		Starting     bool   `json:"starting"`
+		AdminAddr    string `json:"admin_addr"`
+		Ready        bool   `json:"ready"`
 		Subscription *struct {
 			Used   int64 `json:"used"`
 			Total  int64 `json:"total"`
@@ -253,9 +262,16 @@ func cmdStatus() {
 		fmt.Println("控制台无响应:", err)
 		return
 	}
-	fmt.Printf("代理: http://127.0.0.1:%d   控制台: http://127.0.0.1:%d\n", info.ProxyPort, info.Controller.Port)
+	fmt.Printf("Proxy Switcher 代理: 127.0.0.1:%d（HTTP / SOCKS5）\n管理网页: http://%s\n", info.ProxyPort, info.AdminAddr)
 	if info.Starting {
 		fmt.Println("订阅: 正在启动加载（订阅源慢时可能需要 1-2 分钟），稍后再查")
+		return
+	}
+	if !info.Ready {
+		fmt.Println("代理尚未就绪，请在管理网页设置或检查订阅")
+		if info.LastErr != "" {
+			fmt.Println("原因:", info.LastErr)
+		}
 		return
 	}
 	fmt.Printf("节点: %d   当前: %s\n", info.Nodes, orNA(info.Current))
