@@ -1,7 +1,6 @@
 package server
 
 import (
-	"context"
 	"embed"
 	"encoding/json"
 	"io"
@@ -11,15 +10,16 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"time"
 
 	"fly/internal/app"
+	"fly/internal/checks"
 	"fly/internal/core"
 	"fly/internal/sub"
 	"github.com/metacubex/mihomo/adapter/outboundgroup"
 	"github.com/metacubex/mihomo/component/profile/cachefile"
+	C "github.com/metacubex/mihomo/constant"
 	"github.com/metacubex/mihomo/tunnel"
 )
 
@@ -29,14 +29,14 @@ var content embed.FS
 type Server struct {
 	app      *app.App
 	version  string
+	checks   *checks.Manager
 	http     *http.Server
-	testing  atomic.Bool
 	updating atomic.Bool
 	updateEr atomic.Value // string
 }
 
 func New(a *app.App, version string) *Server {
-	s := &Server{app: a, version: version}
+	s := &Server{app: a, version: version, checks: checks.New(8, 90*time.Second)}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /", s.handleStatic)
 	mux.HandleFunc("GET /api/info", s.handleInfo)
@@ -48,6 +48,9 @@ func New(a *app.App, version string) *Server {
 	mux.HandleFunc("GET /api/proxies", s.handleProxies)
 	mux.HandleFunc("PUT /api/select", s.handleSelect)
 	mux.HandleFunc("POST /api/test", s.handleTest)
+	mux.HandleFunc("GET /api/checks", s.handleChecks)
+	mux.HandleFunc("POST /api/checks", s.handleStartChecks)
+	mux.HandleFunc("DELETE /api/checks", s.handleCancelChecks)
 	mux.HandleFunc("GET /api/rules", s.handleRules)
 	mux.HandleFunc("GET /api/routing", s.handleRouting)
 	mux.HandleFunc("PUT /api/routing", s.handleSaveRouting)
@@ -119,6 +122,9 @@ func (s *Server) handleInfo(w http.ResponseWriter, r *http.Request) {
 	resp["imported"] = imported
 	resp["download_route"] = route
 	resp["generation"] = s.app.Generation()
+	if nodes > 0 {
+		resp["node_health"] = s.nodeHealth()
+	}
 	if e, ok := s.updateEr.Load().(string); ok {
 		resp["update_err"] = e
 	}
@@ -143,7 +149,28 @@ func (s *Server) queryCurrent() (string, string) {
 func (s *Server) handleProxies(w http.ResponseWriter, r *http.Request) {
 	core.Runtime.RLock()
 	defer core.Runtime.RUnlock()
-	writeJSON(w, map[string]any{"proxies": tunnel.Proxies()})
+	proxies := map[string]any{}
+	for name, p := range tunnel.Proxies() {
+		history := []C.DelayHistory{}
+		view := map[string]any{"type": p.Type().String()}
+		if state, ok := p.ExtraDelayHistories()[checks.LatencyURL]; ok {
+			history = state.History
+			view["alive"] = state.Alive
+		}
+		view["history"] = history
+		if g, ok := p.Adapter().(interface{ Now() string }); ok {
+			view["now"] = g.Now()
+		}
+		if g, ok := p.Adapter().(interface{ Proxies() []C.Proxy }); ok {
+			names := []string{}
+			for _, child := range g.Proxies() {
+				names = append(names, child.Name())
+			}
+			view["all"] = names
+		}
+		proxies[name] = view
+	}
+	writeJSON(w, map[string]any{"proxies": proxies})
 }
 func (s *Server) handleSelect(w http.ResponseWriter, r *http.Request) {
 	var body struct {
@@ -169,43 +196,11 @@ func (s *Server) handleSelect(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "节点不存在", 400)
 		return
 	}
+	if job := s.checks.Snapshot(s.app.Generation()); job != nil && job.Route == "browser" && !job.Done {
+		_ = s.checks.Cancel(job.ID, "所选节点已变更，请重新测试分流")
+	}
 	cachefile.Cache().SetSelected(core.GroupProxy, body.Name)
 	writeJSON(w, map[string]bool{"ok": true})
-}
-func (s *Server) handleTest(w http.ResponseWriter, r *http.Request) {
-	if !s.testing.CompareAndSwap(false, true) {
-		http.Error(w, "正在测速", 409)
-		return
-	}
-	defer s.testing.Store(false)
-	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
-	defer cancel()
-	var mu sync.Mutex
-	var wg sync.WaitGroup
-	limit := make(chan struct{}, 8)
-	results := map[string]uint16{}
-	for name, p := range tunnel.Proxies() {
-		if name == core.GroupProxy || name == core.GroupAuto || name == "DIRECT" || name == "REJECT" || name == "GLOBAL" || name == "COMPATIBLE" || name == "PASS" {
-			continue
-		}
-		limit <- struct{}{}
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			defer func() { <-limit }()
-			c, done := context.WithTimeout(ctx, 3*time.Second)
-			defer done()
-			delay, err := p.URLTest(c, "https://www.gstatic.com/generate_204", nil)
-			if err != nil {
-				delay = 0
-			}
-			mu.Lock()
-			results[name] = delay
-			mu.Unlock()
-		}()
-	}
-	wg.Wait()
-	writeJSON(w, results)
 }
 func (s *Server) handleRules(w http.ResponseWriter, r *http.Request) {
 	core.Runtime.RLock()
@@ -245,6 +240,7 @@ func (s *Server) handleSetSubscription(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer s.updating.Store(false)
+	_ = s.checks.Cancel("", "正在替换订阅，请完成后重新测试")
 	s.updateEr.Store("")
 	var content []byte
 	if body.Content != nil {

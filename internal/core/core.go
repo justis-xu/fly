@@ -135,13 +135,18 @@ func Start(cfgBytes []byte) error {
 	if err := hub.Parse(cfgBytes); err != nil {
 		return err
 	}
-	if expected.Port > 0 && !Ready(expected.Port) {
+	if expected.Port > 0 && !ready(expected.Port) {
 		return fmt.Errorf("代理端口 %d 监听失败，请检查端口占用", expected.Port)
 	}
 	return nil
 }
 
 func Ready(port int) bool {
+	Runtime.RLock()
+	defer Runtime.RUnlock()
+	return ready(port)
+}
+func ready(port int) bool {
 	if port <= 0 || tunnel.Status() != tunnel.Running || listener.GetPorts().MixedPort != port {
 		return false
 	}

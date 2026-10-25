@@ -47,10 +47,10 @@ if a.SubscriptionURL() != oldURL { t.Fatal("failure lost working subscription") 
 **Files:** internal/checks/{manager,probe}.go and tests; internal/core/probe.go; internal/server/checks.go.
 **Interfaces:** POST/GET/DELETE /api/checks; mode latency/sites; pinned proxy and per-result timestamps/status/code/delay/message; one bounded job at a time, cancellation and partial results.
 
-- [ ] RED/GREEN: completed/pending/canceled distinct, worker limit, context timeout, stale results invalidated on subscription change, concurrent start rejected.
-- [ ] RED/GREEN: direct node probe traverses actual adapter; local mixed probe exercises rules; local target responds 200/204/403/429/500, closed socket, redirect and timeout.
-- [ ] Keep legacy /api/test compatibility or document its new response; no test result may silently select a different node or mark untested nodes failed.
-- [ ] Test website and latency independence, selected automatic strategy pinning, and meaningful errors without secrets.
+- [x] RED/GREEN: completed/pending/canceled distinct, worker limit, context timeout, stale results invalidated on subscription change, concurrent start rejected.
+- [x] RED/GREEN: direct node probe traverses actual adapter; local mixed probe exercises rules; local target responds 200/204/403/429/500, closed socket, redirect and timeout.
+- [x] Keep legacy /api/test compatibility or document its new response; no test result may silently select a different node or mark untested nodes failed.
+- [x] Test website and latency independence, selected automatic strategy pinning, and meaningful errors without secrets.
 
 ### Task 4: usable single-page controls
 
@@ -83,3 +83,5 @@ if a.SubscriptionURL() != oldURL { t.Fatal("failure lost working subscription") 
 - Concurrency evidence: real reloads exposed inbound prefix slices and IP4P flag; pinned selection exposed history queue empty-check and selector name races. Each controlled regression was observed RED under -race before its minimal upstream fix. Seven upstream files now differ from v1.19.33 (including two baseline files); provenance/patch updated.
 - Current Go race suite: all packages pass; go vet passed. Process-level new-HOME acceptance and final review remain outstanding.
 - Ruling: HTTP rule resources now refresh with fly subscription updates (manual/24h), using the same download fallbacks; core provider interval is 0. This avoids independent background downloads bypassing the configured fallback, makes resource failure visible, and keeps immutable strategies between reloads. Cost if wrong: a subscription's shorter per-rule-provider interval is superseded by fly's refresh schedule; documented in Task 5.
+
+- Task 3 backend: async /api/checks, bounded workers/deadline/cancel, timestamps, generation invalidation, fixed-node website GET headers and actual mixed-rule path, strict manual HEAD/204 latency. Legacy /api/test reports only completed items. Current selected automatic health is separate from local listener readiness. Website probes never mutate auto/latency histories. Real local relay tests verify pinning and mixed direct/proxy behavior; HTTP 403/429/500, redirects, timeouts verified with local targets. Full Go race/vet passed; UI integration is Task 4.
