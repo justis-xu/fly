@@ -39,12 +39,14 @@ type Job struct {
 	Results      []Result  `json:"results"`
 }
 type Manager struct {
-	mu      sync.Mutex
-	workers int
-	timeout time.Duration
-	seq     uint64
-	current *Job
-	cancel  context.CancelFunc
+	latencies         map[string]Result
+	latencyGeneration uint64
+	mu                sync.Mutex
+	workers           int
+	timeout           time.Duration
+	seq               uint64
+	current           *Job
+	cancel            context.CancelFunc
 }
 
 func New(workers int, timeout time.Duration) *Manager {
@@ -61,6 +63,10 @@ func (m *Manager) Start(mode, node, route string, generation uint64, tasks []Tas
 	}
 	if len(tasks) == 0 || len(tasks) > 2000 || probe == nil {
 		return nil, fmt.Errorf("没有可测试的项目，或项目超过 2000 个")
+	}
+	if m.latencyGeneration != generation || m.latencies == nil {
+		m.latencies = map[string]Result{}
+		m.latencyGeneration = generation
 	}
 	m.seq++
 	job := &Job{ID: fmt.Sprint(m.seq), Mode: mode, Node: node, Route: route, Generation: generation, StartedAt: time.Now(), Results: make([]Result, len(tasks))}
@@ -98,6 +104,9 @@ func (m *Manager) run(ctx context.Context, cancel context.CancelFunc, job *Job, 
 				}
 				m.mu.Lock()
 				job.Results[i] = result
+				if job.Mode == "latency" && m.latencyGeneration == job.Generation && result.Status != "canceled" {
+					m.latencies[result.Name] = result
+				}
 				job.Completed++
 				m.mu.Unlock()
 			}
@@ -162,4 +171,16 @@ func (m *Manager) Cancel(id, reason string) error {
 		m.cancel()
 	}
 	return nil
+}
+
+func (m *Manager) Latencies(generation uint64) map[string]Result {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := map[string]Result{}
+	if m.latencyGeneration == generation {
+		for k, v := range m.latencies {
+			out[k] = v
+		}
+	}
+	return out
 }

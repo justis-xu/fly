@@ -1,13 +1,13 @@
 'use client';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { api, jsonBody, message } from './api';
-import { type Info, type ProxyMap, type RuleData, type Snapshot } from './types';
+import { type SubscriptionOptions,type Info, type ProxyMap, type RuleData, type Snapshot } from './types';
 
 export function useDashboard() {
   const [snapshot,setSnapshot]=useState<Snapshot|null>(null);
   const [connectionError,setConnectionError]=useState('');
   const [operation,setOperation]=useState<{text:string;error:boolean}|null>(null);
-  const [busy,setBusy]=useState<'select'|'test'|'update'|'save'|null>(null);
+  const [busy,setBusy]=useState<'select'|'update'|'save'|null>(null);
   const alive=useRef(false);
   const loading=useRef(false);
   const timer=useRef<ReturnType<typeof setTimeout>|null>(null);
@@ -45,28 +45,18 @@ export function useDashboard() {
     if(busyRef.current)return false;
     busyRef.current=true;setBusy(kind);setOperation(null);
     try {
-      const result=await api<Record<string,number>>(path,options);
-      if(kind==='test') {
-        setSnapshot(previous=>{
-          if(!previous)return previous;
-          const proxies={...previous.proxies};
-          for(const [name,delay]of Object.entries(result))if(proxies[name])proxies[name]={...proxies[name],history:[{delay}]};
-          return {...previous,proxies};
-        });
-        setOperation({text:`测速完成，${Object.values(result).filter(n=>n>0).length} 个节点可用。`,error:false});
-      } else {
-        // A slow background poll must not hide the result of a user action.
-        controller.current?.abort();
-        await refresh();
-      }
+      await api(path,options);
+      // A slow background poll must not hide the result of a user action.
+      controller.current?.abort();
+      await refresh();
       return true;
     } catch(error) {setOperation({text:`${prefix}：${message(error)}`,error:true});return false;}
     finally {busyRef.current=false;setBusy(null);}
   };
   return {snapshot,connectionError,operation,busy,dismiss:()=>setOperation(null),
     select:(name:string)=>act('select','select',{method:'PUT',...jsonBody({name})},'切换失败'),
-    test:()=>act('test','test',{method:'POST'},'测速失败'),
     update:()=>act('update','update',{method:'POST'},'更新失败'),
-    save:(url:string)=>act('save','subscription',{method:'POST',...jsonBody({url})},'保存失败'),
+    save:(url:string,options?:SubscriptionOptions)=>act('save','subscription',{method:'POST',...jsonBody({url,...options})},'保存失败'),
+    refresh:async()=>{controller.current?.abort();await refresh();},
   };
 }

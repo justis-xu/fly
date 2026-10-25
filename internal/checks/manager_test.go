@@ -64,3 +64,24 @@ func TestResultsKeepTheirActualTimeAndBecomeStaleAfterConfigChange(t *testing.T)
 		t.Fatalf("lost provenance: %+v", got)
 	}
 }
+
+func TestLatencyResultsSurviveWebsiteJobButNotSubscriptionReplacement(t *testing.T) {
+	m := New(1, time.Second)
+	_, err := m.Start("latency", "", "node", 3, []Task{{Name: "A"}}, func(context.Context, Task) Result { return Result{Status: "ok", Delay: 42} })
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(time.Second)
+	for !m.Snapshot(3).Done && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if _, err = m.Start("sites", "A", "node", 3, []Task{{Name: "site"}}, func(context.Context, Task) Result { return Result{Status: "restricted"} }); err != nil {
+		t.Fatal(err)
+	}
+	if got := m.Latencies(3)["A"]; got.Delay != 42 {
+		t.Fatalf("website job lost independent latency results: %+v", got)
+	}
+	if len(m.Latencies(4)) != 0 {
+		t.Fatal("replacement subscription inherited another source's measurements")
+	}
+}

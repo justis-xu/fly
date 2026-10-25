@@ -57,10 +57,10 @@ if a.SubscriptionURL() != oldURL { t.Fatal("failure lost working subscription") 
 **Files:** web/src/components/{nodes,subscription,routing,checks,dashboard}*, web/src/lib/*, web/tests/*; web/scripts/preview.mjs.
 **Interfaces:** consume Task 1-3 APIs; persisted sorting preference; dialogs for rule editing and website tests, main screen stays focused.
 
-- [ ] RED/GREEN React tests: sorting with missing/failed delay, search, import and download proxy, failed transactional save, editing/reordering rules, job progress/cancel, restricted vs failed site results.
-- [ ] Replace generic green service claim with clear local service / selected node / last check context and recovery actions.
-- [ ] Capture safe desktop and 390px screenshots of final paths, verify keyboard and scrolling, console/network clean.
-- [ ] Build/export static UI and check source/output parity.
+- [x] RED/GREEN React tests: sorting with missing/failed delay, search, import and download proxy, failed transactional save, editing/reordering rules, job progress/cancel, restricted vs failed site results.
+- [x] Replace generic green service claim with clear local service / selected node / last check context and recovery actions.
+- [x] Capture safe desktop and 390px screenshots of final paths, verify keyboard and scrolling, console/network clean.
+- [x] Build/export static UI and check source/output parity.
 
 ### Task 5: clean-room acceptance, manuals and delivery
 
@@ -85,3 +85,6 @@ if a.SubscriptionURL() != oldURL { t.Fatal("failure lost working subscription") 
 - Ruling: HTTP rule resources now refresh with fly subscription updates (manual/24h), using the same download fallbacks; core provider interval is 0. This avoids independent background downloads bypassing the configured fallback, makes resource failure visible, and keeps immutable strategies between reloads. Cost if wrong: a subscription's shorter per-rule-provider interval is superseded by fly's refresh schedule; documented in Task 5.
 
 - Task 3 backend: async /api/checks, bounded workers/deadline/cancel, timestamps, generation invalidation, fixed-node website GET headers and actual mixed-rule path, strict manual HEAD/204 latency. Legacy /api/test reports only completed items. Current selected automatic health is separate from local listener readiness. Website probes never mutate auto/latency histories. Real local relay tests verify pinning and mixed direct/proxy behavior; HTTP 403/429/500, redirects, timeouts verified with local targets. Full Go race/vet passed; UI integration is Task 4.
+
+- Task 4: UI has persisted four-way sorting, independent diagnostic jobs/progress/cancel, stale-generation guards, transactional URL/file + masked backup proxy inputs, editable/reorderable normalized user rules, rule-set search, and separate local-ready/current-node status. React 21 tests passed; build and types passed. Browser fixture QA exercised name/latency sorting, persisted option after reload, rule save, provider search, file chooser/read/import, switching source, latency cancel, and website response classes. 390px viewport/main and diagnostic dialog had document width exactly 390; viewport reset. Console warnings/errors empty. New screenshots are genuine JPEG files with correct extensions; extension native PNGs unchanged. Final process acceptance/manual rewrite still Task 5.
+- Ruling: automatic node health checks run every 300 seconds even with a manually selected node, so manual-node failures can become visible. It never switches a manual selection. Cost if wrong: background checks create periodic HEAD traffic; document the target, timing and distinction from website tests.

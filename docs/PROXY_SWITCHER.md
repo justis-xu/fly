@@ -44,13 +44,13 @@
 7. 等待节点列表出现，并确认顶部显示「服务运行中」。首次下载可能需要一两分钟。若失败，先按页面提示修正订阅，不要反复点击更新。
 8. 点击一个节点，或点击「自动选择」。这一步之后再配置插件。
 
-![fly 添加订阅的位置](images/01-first-run.png)
+![fly 添加订阅的位置](images/01-first-run.jpg)
 
-![在 fly 中粘贴自己的订阅，输入框默认隐藏内容](images/02-add-subscription.png)
+![在 fly 中粘贴自己的订阅，输入框默认隐藏内容](images/02-subscription.jpg)
 
 成功时的页面类似下图。这里的节点名、日期和流量都是演示数据，你自己的数值会不同。
 
-![订阅就绪后的 fly 页面](images/03-dashboard.png)
+![订阅就绪后的 fly 页面](images/03-dashboard.jpg)
 
 ## 第二步：安装正确的 Proxy Switcher
 
@@ -78,7 +78,7 @@
 | 本次截图对应版本 | `0.6.8` |
 | 打开后面板上的大标题 | **Proxy Switcher** |
 
-![官方商店页面，核对名称和添加按钮](images/13-extension-store.png)
+![官方商店页面，核对名称和添加按钮](images/13-extension-store.jpg)
 
 图中是官方商店网页，拍摄环境为内置浏览器，所以页面还提示“切换到 Chrome”；**实际安装请在 Google Chrome 普通窗口操作**。不需要开启开发者模式。下文的插件面板截图则来自真正安装了插件的 Chrome。
 

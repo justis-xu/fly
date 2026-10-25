@@ -85,6 +85,7 @@ func BuildConfig(proxies []map[string]any, routing Routing, opt Options) ([]byte
 				"interval":        300,
 				"timeout":         5000,
 				"expected-status": "204",
+				"lazy":            false,
 				"tolerance":       50,
 				"proxies":         names,
 			},

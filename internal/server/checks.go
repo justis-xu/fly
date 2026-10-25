@@ -14,7 +14,8 @@ import (
 )
 
 func (s *Server) handleChecks(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, map[string]any{"job": s.checks.Snapshot(s.app.Generation()), "targets": checks.Websites, "latency_url": checks.LatencyURL})
+	generation := s.app.Generation()
+	writeJSON(w, map[string]any{"job": s.checks.Snapshot(generation), "targets": checks.Websites, "latency_url": checks.LatencyURL, "generation": generation, "latencies": s.checks.Latencies(generation)})
 }
 func (s *Server) handleCancelChecks(w http.ResponseWriter, r *http.Request) {
 	if err := s.checks.Cancel(r.URL.Query().Get("id"), "用户取消，未完成项目不代表节点失败"); err != nil {
@@ -49,6 +50,7 @@ func (s *Server) startChecks(mode string, names []string) (*checks.Job, int, err
 	if len(names) > 2000 {
 		return nil, 400, fmt.Errorf("最多测试 2000 个节点")
 	}
+	generation := s.app.Generation()
 	var tasks []checks.Task
 	var probe func(context.Context, checks.Task) checks.Result
 	node := ""
@@ -104,7 +106,10 @@ func (s *Server) startChecks(mode string, names []string) (*checks.Job, int, err
 	default:
 		return nil, 400, fmt.Errorf("请选择延迟、当前节点网站或浏览器分流测试")
 	}
-	job, err := s.checks.Start(mode, node, route, s.app.Generation(), tasks, probe)
+	if generation != s.app.Generation() {
+		return nil, 409, fmt.Errorf("配置刚刚更新，请刷新后重试")
+	}
+	job, err := s.checks.Start(mode, node, route, generation, tasks, probe)
 	if err != nil {
 		return nil, 409, err
 	}
