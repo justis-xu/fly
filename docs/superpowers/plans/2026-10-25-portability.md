@@ -67,12 +67,12 @@ if a.SubscriptionURL() != oldURL { t.Fatal("failure lost working subscription") 
 **Files:** scripts/acceptance/*, docs/{INSTALL,USAGE,PROXY_SWITCHER,FAQ,QA,DEVELOPMENT}.md, docs/images/*, CI workflow.
 **Interfaces:** process-level acceptance takes built binary, creates its own data/ports/fixture servers, cleans only owned resources.
 
-- [ ] New HOME + no proxy env + no previous cache; run/install/stop; add source A then B; invalid replacement, offline restart and cache boundaries; override persistence and HTTP/SOCKS behavior.
-- [ ] Update illustrated novice steps for supported subscription formats, blocked subscription download, importing files, healthy-node recovery, editable rules, sorting and two test types.
-- [ ] Recheck commands and image/anchor links; redact private configuration and examine real images.
-- [ ] Full frontend tests/build/types; Go race/vet and process acceptance; independent whole-change review and fixes; final install/restart as authorized.
-- [ ] Stage all, commit, push, GitHub CI passed, remote/local equality and clean tree.
-- [ ] Completion audit: every numbered spec item has concrete current evidence; only then mark goal complete.
+- [x] New HOME + no proxy env + no previous cache; run/install/stop; add source A then B; invalid replacement, offline restart and cache boundaries; override persistence and HTTP/SOCKS behavior.
+- [x] Update illustrated novice steps for supported subscription formats, blocked subscription download, importing files, healthy-node recovery, editable rules, sorting and two test types.
+- [x] Recheck commands and image/anchor links; redact private configuration and examine real images.
+- [x] Full frontend tests/build/types; Go race/vet and process acceptance; independent whole-change review and fixes; final install/restart as authorized.
+- [x] Stage all, commit, push, GitHub CI passed, remote/local equality and clean tree.
+- [x] Completion audit: every numbered spec item has concrete current evidence; only then mark goal complete.
 
 ## Execution ledger
 
@@ -94,3 +94,56 @@ if a.SubscriptionURL() != oldURL { t.Fatal("failure lost working subscription") 
 - Subscription activation now writes a separate atomic cache for each source before persisting its address, keeping old and new sources recoverable across process interruption; disk-write failure regression verifies original live selector, saved URL and cache remain.
 - Ruling: preserve pre-upgrade legacy cache availability but carry an explicit unverified-source marker across restarts until a successful online fetch. Existing legacy data lacks provenance, which cannot be reconstructed. Cost if wrong: old cached nodes may belong to an older source; UI and manual warn and require successful update to verify. A new replacement URL never borrows that cache.
 - Final review focus: transactions/cold cache/failed persistence; provider auth/fallback and unsupported source fields; rule normalization/priority/provider contents; cancellation/provenance and stale generation; lifecycle identity across environment changes; genuine novice documentation and clarity between readiness/latency/websites. Windows is explicitly outside the existing Unix/macOS delivery scope.
+
+
+## 最终审查与逐项验收
+
+独立审查覆盖 276dcc9..d41a863。6 个 Important 均以永久故障回归先观察失败，再统一修复；无 Critical，无延期 Minor。修复提交 a3528a0。未安排重复审查，以完整测试与实际安装作为修复验证。
+
+| 审查发现 | 修复后的证据 |
+|---|---|
+| 候选失败会覆盖旧规则资源 | `TestRegressionFailedReplacementKeepsRuleResources`；包括坏配置、设置保存失败、用户规则重建和离线重启 |
+| 时区变化后守护进程身份丢失 | `TestRegressionIdentityTZ`；跨时区 / locale，临时 ps 故障仍保留记录 |
+| 规则资源未隔离认证账号 | `TestRegressionDifferentAuthCannotBorrowRuleCache` |
+| 节点来源字段静默丢弃 | `TestRegressionProviderUnsupportedFields`；未实现的连接 / 筛选字段明确拒绝 |
+| HTTP Upgrade 分享链接错误映射为普通 TCP | `TestRegressionUnsupportedHTTPUpgradeIsRejected`；明确要求兼容导出 |
+| YAML 首页注释包含网址时误识别 | `TestRegressionYAMLFirstLineURL` |
+
+| 设计目标 | 当前证据 |
+|---|---|
+| 1 新电脑 / 空配置独立运行 | `scripts/acceptance/clean_room.py --install`，真实二进制、空 HOME、独立数据与端口、标准 PATH |
+| 2 下载无隐式环境依赖及恢复 | `TestFetchIgnoresEnvironmentProxy` / `TestFetchFallbackProxy`；真实备用出口与文件导入验收 |
+| 3 更换 / 保存失败保留原配置 | `TestDiskSaveFailureRestoresLiveSourceAndItsCache`、上述规则资源事务回归；不同来源缓存分别保留 |
+| 4 支持格式、无效节点与额外配置边界 | sub 解析 / 来源 / 认证回归、实际二进制的额外端口和 TUN 忽略验收；[订阅要求](../../SUBSCRIPTIONS.md) |
+| 5 规则查看 / 编辑 / 优先级 / 持久化 | routing / IP override / YAML-text-MRS 分页回归；实际 mixed 代理与直连 / 拒绝验收；规则界面截图 |
+| 6 搜索与四种排序 | 22 项 React 回归中的节点测试，实际浏览器排序与刷新保留验收；[使用手册](../../USAGE.md) |
+| 7 延迟 / 网站独立、固定节点、取消与时效 | checks manager / route / probe 回归；实际网站 200/204/403 诊断结果与 [QA](../../QA.md) |
+| 8 本机与公网可用性分开 | 实际安装后端口仅 7888/7889，HTTP/SOCKS 204；当前节点健康及网站受限状态分别显示 |
+| 9 单页与图文恢复手册 | 390px 与桌面浏览器检查、真实截图、所有用户文档本地文件 / 图片 / 标题链接检查、凭据扫描 |
+
+### 保留的取舍与边界
+
+按决策顺序记录，并明确使用者承担的限制：
+
+1. 文件导入会冻结展开后的节点来源，关闭定时网络刷新；节点变化需要重新导入文件。
+2. 下载固定尝试直连 → 显式备用 → 当时所选的实际节点，不借用环境代理；全部失败需要用户恢复网络后重试。
+3. 手动延迟是一次严格 204 的 HEAD，包含建连；自动选择使用内核计时与独立健康记录，两种数字不能直接比较。
+4. 规则资源随订阅手动 / 默认 24 小时更新，内核独立 interval 为 0；来源自己更短的周期被替代。
+5. 手动选节点也每 300 秒健康检查，不自动切换该选择；会产生周期 HEAD 请求。
+6. 旧版无来源缓存保留离线能力，但持久标注未核实，联网更新才消除；旧节点可能来自更早来源，新地址不借用旧缓存。
+7. Windows 守护进程、Edge / Safari / 手机插件未验收；当前安装范围明确为 macOS 与 Chrome。
+8. 最终安装 / 推送 / CI 不由代码审查代替；它们是单独交付门槛，未完成时不能宣布完成。
+9. Chrome 0.6.8 保留既有真实插件填写 / 保存 / 启用证据，本轮另验新程序协议与公网；未卸载个人插件重拍首次安装，不能据此保证以后商店按钮与所有站点不变。
+10. 压缩 UI 与图片采用源代码检查、22 文件导出一致性和实际浏览器 / 图像核对；没有逐字节视觉审查，生成问题仍依赖实际界面验收暴露。
+11. 内嵌 mihomo 保持上游来源和 7 处最小并发补丁，没有对整个上游做全面审计；其他上游缺陷仍可能存在。
+12. 取消与 generation 已有结果隔离 / UI 屏蔽回归，没有可复现的额外发现；未观测的并发情况不作绝对保证。
+13. 网站测试只验证公开地址响应头，不保证登录、地区解锁、播放或完整功能；成功响应仍可能伴随后续页面限制。
+14. HTTP Upgrade 分享链接与未实现的节点来源连接 / 筛选字段明确拒绝；仅有这些输入的用户需要取得兼容、已展开的 YAML。
+15. 规则版本保留为不可变文件，不自动删除历史快照；长期更新可能增加数据目录空间。
+
+
+### 远端记录
+
+- 修复后的功能提交 a3528a0 已推送并通过 [Check 40189974695](https://github.com/justis-xu/fly/actions/runs/40189974695)，包括完整前端、Go race / vet / build 和真实二进制安装验收。
+- 最后文档记录同步到 master 后继续核对该分支工作流、远端相同提交和干净工作区；最终交付以 master 对应的 Check 结果为准。
+- CI 有官方 Actions 从 Node 20 迁移到 Node 24 的上游注记，所有步骤已成功；暂不扩大此次可用性修复范围去升级工作流动作。此项为延期小项，不影响本次结果。
