@@ -34,7 +34,7 @@ var ownership struct {
 func identity(pid int) (processRecord, error) {
 	read := func(field string) (string, error) {
 		cmd := exec.Command("ps", "-ww", "-p", strconv.Itoa(pid), "-o", field+"=")
-		cmd.Env = append(os.Environ(), "LC_ALL=C")
+		cmd.Env = append(os.Environ(), "LC_ALL=C", "TZ=UTC")
 		b, err := cmd.Output()
 		return strings.TrimSpace(string(b)), err
 	}
@@ -82,7 +82,14 @@ func Running(dataDir string) int {
 		return 0
 	}
 	actual, err := identity(record.PID)
-	if err != nil || actual.Started != record.Started || actual.Command != record.Command {
+	if err != nil {
+		// A transient ps failure must not destroy the only record of a live daemon.
+		if !alive(record.PID) {
+			_ = os.Remove(pidPath(dataDir))
+		}
+		return 0
+	}
+	if actual.Started != record.Started || actual.Command != record.Command {
 		_ = os.Remove(pidPath(dataDir))
 		return 0
 	}

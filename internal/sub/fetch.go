@@ -24,12 +24,13 @@ const fetchUA = "clash.meta/fly"
 
 // Info 来自订阅响应头 subscription-userinfo。
 type Info struct {
-	Upload      int64     `json:"upload"`
-	Download    int64     `json:"download"`
-	Total       int64     `json:"total"`
-	Expire      int64     `json:"expire"`
-	FetchedAt   time.Time `json:"fetched_at"`
-	LegacyCache bool      `json:"legacy_cache,omitempty"`
+	Upload      int64             `json:"upload"`
+	Download    int64             `json:"download"`
+	Total       int64             `json:"total"`
+	Expire      int64             `json:"expire"`
+	FetchedAt   time.Time         `json:"fetched_at"`
+	LegacyCache bool              `json:"legacy_cache,omitempty"`
+	RuleFiles   map[string]string `json:"rule_files,omitempty"` // private immutable resource snapshots, keyed by request identity
 }
 
 func (i *Info) Used() int64 { return i.Upload + i.Download }
@@ -248,12 +249,6 @@ func BodyToLinks(body []byte) (linksText string, yamlProxies []map[string]any, y
 	if t == "" {
 		return "", nil, nil
 	}
-	if b, err := b64Decode(t); err == nil && strings.Contains(string(b), "://") {
-		return string(b), nil, nil
-	}
-	if first := t[:min(200, len(t))]; strings.Contains(strings.SplitN(first, "\n", 2)[0], "://") {
-		return t, nil, nil
-	}
 	if strings.Contains(t, "proxies:") {
 		var cfg struct {
 			Proxies []map[string]any `yaml:"proxies"`
@@ -262,6 +257,9 @@ func BodyToLinks(body []byte) (linksText string, yamlProxies []map[string]any, y
 		if err := yaml.Unmarshal([]byte(t), &cfg); err == nil && len(cfg.Proxies) > 0 {
 			return "", cfg.Proxies, cfg.Rules
 		}
+	}
+	if b, err := b64Decode(t); err == nil && strings.Contains(string(b), "://") {
+		return string(b), nil, nil
 	}
 	return t, nil, nil
 }

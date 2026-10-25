@@ -2,8 +2,10 @@ package core
 
 import (
 	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"time"
@@ -180,6 +182,29 @@ func extractGeoFiles(homeDir string) error {
 	return nil
 }
 
+// RuleCachePath fingerprints every request header as well as its URL and parser settings.
+// Credentials stay inside a one-way hash; header capitalization and map order are normalized.
 func RuleCachePath(name string, provider map[string]any) string {
-	return fmt.Sprintf("./rules/%x", sha256.Sum256([]byte(fmt.Sprint(name, "\x00", provider["url"], "\x00", provider["behavior"], "\x00", provider["format"]))))
+	identity := fmt.Sprint(name, "\x00", provider["url"], "\x00", provider["behavior"], "\x00", provider["format"])
+	if raw := provider["header"]; raw != nil {
+		data, _ := yaml.Marshal(raw)
+		var fields map[string]any
+		_ = yaml.Unmarshal(data, &fields)
+		headers := http.Header{}
+		for key, value := range fields {
+			switch values := value.(type) {
+			case string:
+				headers.Set(key, values)
+			case []any:
+				for _, v := range values {
+					headers.Add(key, fmt.Sprint(v))
+				}
+			}
+		}
+		if len(headers) > 0 {
+			normalized, _ := json.Marshal(headers)
+			identity += "\x00" + string(normalized)
+		}
+	}
+	return fmt.Sprintf("./rules/%x", sha256.Sum256([]byte(identity)))
 }

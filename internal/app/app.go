@@ -241,6 +241,9 @@ func (a *App) StartCore() error {
 			return err
 		}
 	}
+	a.mu.Lock()
+	data = a.cfgBytes // preparation binds immutable rule snapshot paths.
+	a.mu.Unlock()
 	if err := core.Start(data); err != nil {
 		return fmt.Errorf("订阅内核配置无效：%s", sub.Redact(err.Error()))
 	}
@@ -260,6 +263,7 @@ func (a *App) Refresh() error {
 	if err == nil && candidate.LastErr != "" && hasRuntime {
 		err = fmt.Errorf("%s；继续保留当前配置", candidate.LastErr)
 	}
+	activationAttempted := err == nil
 	if err == nil {
 		err = candidate.StartCore()
 	}
@@ -274,6 +278,11 @@ func (a *App) Refresh() error {
 		}
 	}
 	if err != nil {
+		if hasRuntime && activationAttempted {
+			if restoreErr := a.rollbackCore(); restoreErr != nil {
+				err = fmt.Errorf("更新失败，旧配置恢复失败，请检查端口后重新启动")
+			}
+		}
 		a.setLastErr(sub.Redact(err.Error()))
 		return err
 	}

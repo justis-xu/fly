@@ -205,7 +205,7 @@ func parseSS(line string) (map[string]any, error) {
 
 func applyTransport(m map[string]any, q url.Values) error {
 	switch q.Get("type") {
-	case "", "tcp", "ws", "grpc", "httpupgrade":
+	case "", "tcp", "ws", "grpc":
 	default:
 		return fmt.Errorf("不支持此分享链接传输类型，请使用 Clash YAML")
 	}
@@ -252,16 +252,6 @@ func applyTransport(m map[string]any, q url.Values) error {
 		if sn := q.Get("serviceName"); sn != "" {
 			m["grpc-opts"] = map[string]any{"grpc-service-name": sn}
 		}
-	case "httpupgrade":
-		m["network"] = "httpupgrade"
-		hu := map[string]any{}
-		if h := headers(); h != nil {
-			hu["host"] = q.Get("host")
-		}
-		if path := q.Get("path"); path != "" {
-			hu["path"] = path
-		}
-		m["httpupgrade-opts"] = hu
 	}
 	return nil
 }

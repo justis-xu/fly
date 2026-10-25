@@ -3,6 +3,8 @@ package app
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fly/internal/config"
 	"fly/internal/core"
 	"fly/internal/storage"
@@ -37,6 +39,10 @@ func (a *App) SaveUserRules(input []config.UserRule) error {
 	}
 	cfg := a.ConfigSnapshot()
 	next, err := core.BuildConfig(proxies, routing, core.Options{MixedPort: cfg.MixedPort, UserRules: config.RuleLines(rules, core.GroupProxy)})
+	if err != nil {
+		return err
+	}
+	next, err = bindRuleSnapshots(next, a.Info)
 	if err != nil {
 		return err
 	}
@@ -185,72 +191,129 @@ func (a *App) ProviderRules(name, query string, offset, limit int) (any, error) 
 	return rulePage{Items: page.items, Total: page.total, Offset: offset, More: page.total > offset+len(page.items)}, nil
 }
 
-// Fetch rule resources with the same explicit download policy before asking mihomo to load them.
-// A matching on-disk cache permits offline restart; a new broken source cannot replace live routing.
+// bindRuleSnapshots accepts only generated, identity-bound content-addressed paths.
+// Rebuilding user rules must retain the exact resources of the accepted subscription.
+func bindRuleSnapshots(data []byte, info *sub.Info) ([]byte, error) {
+	var cfg map[string]any
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		return nil, err
+	}
+	providers, _ := cfg["rule-providers"].(map[string]any)
+	for name, value := range providers {
+		provider, _ := value.(map[string]any)
+		if provider["type"] != "http" {
+			continue
+		}
+		identity := core.RuleCachePath(name, provider)
+		if info != nil && validSnapshotPath(identity, info.RuleFiles[identity]) {
+			provider["path"] = info.RuleFiles[identity]
+		}
+	}
+	return yaml.Marshal(cfg)
+}
+func validSnapshotPath(identity, path string) bool {
+	suffix, ok := strings.CutPrefix(path, identity+"-")
+	if !ok || len(suffix) != 64 {
+		return false
+	}
+	_, err := hex.DecodeString(suffix)
+	return err == nil
+}
+
+// Rule files are immutable versions. The source-cache transaction commits their
+// paths only after activation, so failure or interruption cannot overwrite old rules.
 func (a *App) prepareRuleResources(ctx context.Context) error {
-	_, providers, err := a.RoutingSource()
-	if err != nil {
+	var cfg map[string]any
+	if err := yaml.Unmarshal(a.cfgBytes, &cfg); err != nil {
 		return err
 	}
-	for _, source := range providers {
-		if source.Type != "http" {
+	providers, _ := cfg["rule-providers"].(map[string]any)
+	snapshots := map[string]string{}
+	known := a.Info
+	if known == nil || len(known.RuleFiles) == 0 {
+		_, cached, ok := sub.LoadSourceCache(a.Dir, a.sourceKey())
+		if ok {
+			known = cached
+		}
+	}
+	for name, value := range providers {
+		provider, _ := value.(map[string]any)
+		if provider["type"] != "http" {
 			continue
 		}
-		// Read the generated URL privately; RoutingSource intentionally doesn't expose it to the GUI.
-		var cfg struct {
-			Providers map[string]map[string]any `yaml:"rule-providers"`
+		identity := core.RuleCachePath(name, provider)
+		behavior, _ := provider["behavior"].(string)
+		format, _ := provider["format"].(string)
+		headers, err := sub.ProviderHeaders(provider["header"])
+		if err != nil {
+			return err
 		}
-		_ = yaml.Unmarshal(a.cfgBytes, &cfg)
-		var provider map[string]any
-		for _, candidate := range cfg.Providers {
-			if candidate["path"] == source.Path {
-				provider = candidate
-				break
+		cachedPath := ""
+		if known != nil && validSnapshotPath(identity, known.RuleFiles[identity]) {
+			cachedPath = known.RuleFiles[identity]
+		}
+		// Older accepted caches stored one file per identity. Only migrate them
+		// when loading that accepted cache, never during a new online transaction.
+		if cachedPath == "" && !a.resourceRefresh {
+			cachedPath = identity
+		}
+		var cached []byte
+		if cachedPath != "" {
+			cached, _ = os.ReadFile(filepath.Join(a.Dir, cachedPath))
+			if core.ValidateRuleResource(cached, behavior, format) != nil {
+				cached = nil
+			}
+			if validSnapshotPath(identity, cachedPath) && fmt.Sprintf("%s-%x", identity, sha256.Sum256(cached)) != cachedPath {
+				cached = nil
 			}
 		}
-		rawURL, _ := provider["url"].(string)
-		path := filepath.Join(a.Dir, source.Path)
-		cachedValid := false
-		if existing, err := os.ReadFile(path); err == nil && len(bytes.TrimSpace(existing)) > 0 {
-			cachedValid = core.ValidateRuleResource(existing, source.Behavior, source.Format) == nil
-		}
-		if cachedValid && !a.resourceRefresh {
-			continue
-		}
-		downloadCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
-		opt := a.fetchOptions()
-		headers, headerErr := sub.ProviderHeaders(provider["header"])
-		if headerErr != nil {
+		body := cached
+		if a.resourceRefresh || len(cached) == 0 {
+			downloadCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+			opt := a.fetchOptions()
+			opt.Headers = headers
+			rawURL, _ := provider["url"].(string)
+			downloaded, _, _, downloadErr := sub.FetchWithOptions(downloadCtx, rawURL, opt)
 			cancel()
-			return headerErr
-		}
-		opt.Headers = headers
-		body, _, _, err := sub.FetchWithOptions(downloadCtx, rawURL, opt)
-		cancel()
-		if err != nil {
 			if ctx.Err() != nil {
 				return fmt.Errorf("规则下载已取消或超时，原配置已保留")
 			}
-			if cachedValid {
-				a.setLastErr("规则资源更新失败，已保留该规则集上次可用的缓存：" + err.Error())
-				continue
+			if downloadErr == nil {
+				downloadErr = core.ValidateRuleResource(downloaded, behavior, format)
 			}
-			return fmt.Errorf("规则集首次下载失败：%w；请设置备用下载代理或使用含内联规则的订阅", err)
-		}
-		if err = core.ValidateRuleResource(body, source.Behavior, source.Format); err != nil {
-			if cachedValid {
-				a.setLastErr("规则资源格式无效，继续使用该规则集上次可用的缓存")
-				continue
+			if downloadErr != nil {
+				if len(cached) == 0 {
+					return fmt.Errorf("规则集首次下载或格式验证失败：%s；请设置备用下载代理或使用含内联规则的订阅", sub.Redact(downloadErr.Error()))
+				}
+				a.setLastErr("规则资源更新失败，已保留该规则集上次可用的缓存：" + sub.Redact(downloadErr.Error()))
+			} else {
+				body = downloaded
 			}
-			return fmt.Errorf("规则资源格式无效：%s", sub.Redact(err.Error()))
 		}
-		if err = os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		path := fmt.Sprintf("%s-%x", identity, sha256.Sum256(body))
+		absolute := filepath.Join(a.Dir, path)
+		if err := os.MkdirAll(filepath.Dir(absolute), 0700); err != nil {
 			return fmt.Errorf("规则缓存目录无法创建")
 		}
-		if err = storage.WriteFile(path, body); err != nil {
-			return fmt.Errorf("规则缓存写入失败，请检查磁盘空间/权限")
+		// Reusing exactly the same immutable bytes does not require a write.
+		existing, readErr := os.ReadFile(absolute)
+		if readErr != nil || !bytes.Equal(existing, body) {
+			if err := storage.WriteFile(absolute, body); err != nil {
+				return fmt.Errorf("规则缓存写入失败，请检查磁盘空间/权限")
+			}
 		}
+		provider["path"] = path
+		snapshots[identity] = path
 	}
+	data, err := yaml.Marshal(cfg)
+	if err != nil {
+		return err
+	}
+	if a.Info == nil {
+		a.Info = &sub.Info{}
+	}
+	a.Info.RuleFiles = snapshots
+	a.cfgBytes = data
 	a.resourcesPrepared = true
 	return nil
 }

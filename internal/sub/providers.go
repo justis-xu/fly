@@ -36,6 +36,18 @@ func ExpandProviders(ctx context.Context, body []byte, opt FetchOptions) ([]byte
 	}
 	sort.Strings(keys)
 	for _, name := range keys {
+		fields, ok := raw[name].(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("节点来源配置格式错误")
+		}
+		for key := range fields {
+			switch key {
+			case "type", "url", "header", "payload", "filter", "exclude-filter", "override",
+				"path", "interval", "health-check": // fly owns caching, refresh and health checks.
+			default:
+				return nil, fmt.Errorf("节点来源含不支持的 %s 字段，请使用展开后的 Clash YAML", Redact(key))
+			}
+		}
 		b, _ := yaml.Marshal(raw[name])
 		var p struct {
 			Header   any              `yaml:"header"`
