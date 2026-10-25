@@ -1,18 +1,33 @@
 # fly
 
-**搭配浏览器插件 Proxy Switcher 使用的本地代理服务器。**
+**搭配 Chrome 插件 Proxy Switcher and Manager 使用的本地代理服务器。**
 
-fly 不附带代理节点或订阅，不自动接管浏览器流量。你提供订阅，Proxy Switcher 把浏览器请求交给 fly，fly 根据订阅规则和你选择的节点转发请求。
+用命令行启动和停止，用一个蓝白网页选择节点、测速、更新或更换订阅。前端使用 **Next.js / React / shadcn/ui**，已经打包进程序，普通用户不需要安装 Node.js，也不需要启动第二个前端服务。
 
-```text
-浏览器 → Proxy Switcher → fly（127.0.0.1:7888）→ 订阅节点 / 按规则直连
-```
+fly 不附带节点或订阅。你提供自己的订阅，插件把浏览器请求交给 fly，fly 再按规则直连或使用你所选的节点。不设置系统代理，不启用 TUN。
 
-命令行负责启停，一个网页负责选节点、测速和管理订阅。不设置系统代理，不启用 TUN。
+![fly 管理页，节点和订阅信息均为演示数据](docs/images/03-dashboard.png)
 
-## 快速开始（macOS）
+## 第一次用，从这里开始
 
-需要 Git、Make 和 Go 1.26.2 或更高版本。
+**不熟悉终端、插件或代理也没关系，下面的手册从零开始写。**
+
+| 你现在要做什么 | 看这份图文教程 |
+|---|---|
+| 安装 fly，不知道 Go / 终端怎么用 | **[安装教程：从打开终端到启动成功](docs/INSTALL.md)** |
+| 不知道 Proxy Switcher 是什么、在哪里安装、每个框怎么填 | **[插件超详细教程：安装 → 固定图标 → 填参数 → 保存启用 → 验证 → 切回直连](docs/PROXY_SWITCHER.md)** |
+| 已经装好，想换节点、测速、更新订阅、看规则 | **[日常使用图文手册](docs/USAGE.md)** |
+| 网页打不开、规则不见了、端口不明白 | **[常见问题：按现象一步步排查](docs/FAQ.md)** |
+| 想核对测试结果和验证范围 | [QA 清单与验证记录](docs/QA.md) |
+| 想修改 Next.js 页面或参与开发 | [开发说明](docs/DEVELOPMENT.md) |
+
+完整流程是：**安装 fly → 添加自己的订阅 → 安装并配置插件 → 在 fly 里选择节点 → 浏览网页**。
+
+![浏览器、Proxy Switcher 和 fly 的关系](docs/images/00-how-it-works.svg)
+
+## 熟悉命令行的人可以快速开始（macOS）
+
+先准备 Git、Make、Go 1.26.2 或更高版本。代码仓库需要相应 GitHub 访问权限。
 
 ```sh
 git clone https://github.com/justis-xu/fly.git
@@ -22,45 +37,41 @@ fly start
 fly ui
 ```
 
-1. 在管理网页填写**你自己的订阅地址**，保存并等待加载完成。
-2. 在浏览器安装并打开 **Proxy Switcher**，新增一个代理配置：协议 **HTTP**，主机 **127.0.0.1**，端口 **7888**。需要代理的 HTTP 和 HTTPS 网站都使用此配置；HTTPS 网站通过 HTTP CONNECT 访问。
-3. 在 Proxy Switcher 中启用这个配置，然后在 fly 网页选择节点或「自动选择」。
+1. fly 网页点击「添加订阅」，粘贴**自己的完整订阅链接**，点击「保存并更新」。
+2. 等到「服务运行中」和节点列表出现，选择一个节点或「自动选择」。
+3. 从[官方 Chrome 商店](https://chromewebstore.google.com/detail/proxy-switcher-and-manage/onnfghpihccifgojkpnnncpagjcdbjod)安装 **Proxy Switcher and Manager**。
+4. 打开插件 → **Manual Proxy** → Profile Name 填 `fly`；HTTP / SSL Proxy 均填 `127.0.0.1`，对应 Port 均填 `7888`；Server Type 选 **HTTP**；Direct 地址列表填 `localhost, 127.0.0.1`。
+5. 点击 Profile Name 右侧**绿色 ✓** 保存并启用。插件的 HTTP 行通常会同步到 SSL / FTP 行，保存前仍请核对。
+6. 新开或刷新目标网页。不会安装、找不到按钮时，直接看上面的[逐步截图教程](docs/PROXY_SWITCHER.md)。
 
-也可以使用 SOCKS5 协议，主机和端口不变；插件提供远程 DNS 选项时一并启用。
+## 只有两个本机端口
 
-| 地址 | 用途 |
+| 默认地址 | 用途 |
 |---|---|
-| `127.0.0.1:7888` | 填入 **Proxy Switcher** 的代理地址，支持 HTTP / SOCKS5 |
-| [http://127.0.0.1:7889](http://127.0.0.1:7889) | fly 唯一管理网页，不能填成代理端口 |
+| **`127.0.0.1:7888`** | 给 **Proxy Switcher** 填写的代理地址；支持 HTTP / SOCKS5 |
+| **[http://127.0.0.1:7889](http://127.0.0.1:7889)** | fly 唯一管理网页，不能当代理端口 |
 
-以上为默认地址，全部只监听本机。没有额外控制端口；旧 `/panel/` 地址回到同一网页。首次添加订阅前，只有管理网页可用，代理端口尚未监听。
+没有额外控制端口，旧 `/panel/` 回到同一个网页。首次订阅成功前，只有管理页可用，代理端口尚未就绪。实际端口改过时，以 `fly status` 和页面显示为准。
 
-## 日常命令
+## 平时只记这几条
 
-| 命令 | 用途 |
+| 命令 / 操作 | 用途 |
 |---|---|
-| `fly` / `fly start` | 后台启动服务器 |
-| `fly stop` | 停止服务器；Proxy Switcher 仍指向它时浏览器请求会失败 |
-| `fly restart` | 重启服务器 |
-| `fly status` | 查看服务器、代理就绪状态、节点与订阅信息 |
-| `fly ui` | 打开管理网页，不代替启动命令 |
-| `fly update` | 更新订阅，保持节点选择 |
-| `fly run` | 前台运行，Ctrl+C 退出 |
-| `fly init --url <地址> --port <端口>` | 修改启动配置，重启后生效 |
+| `fly start` | 后台启动，重复执行不会再开一套 |
+| `fly ui` | 打开管理网页；选节点、测速、更新和修改订阅都在这里 |
+| `fly status` | 看服务器和代理是否就绪 |
+| `fly update` | 立即更新订阅；也可在网页点击 |
+| `fly restart` | 升级程序或改启动参数后重启 |
+| 插件 **Direct**，然后 `fly stop` | 切回浏览器直连并停止服务器 |
 
-网页可点击切换节点、测速、更新订阅或修改订阅地址。订阅的直连、拒绝规则保留，需要代理的策略统一使用所选节点；HTTP / inline 规则集显示实际加载数量。没有规则的链接订阅采用内置分流：国内及局域网直连，其余走节点。仅通过 Proxy Switcher 发给 fly 的请求会经过这些规则。
+关闭网页或终端不会停止后台服务器。重启电脑后需要再次 `fly start`。插件可能记住上次代理模式，停止 fly 前请先切 Direct。
 
-## 手册与检查
+订阅中的直连、拒绝和规则集会尽量保留，需要代理的策略使用所选节点。未提供规则的普通节点订阅采用内置分流。只有浏览器交给 fly 的请求才会经过这些规则；查看 IP 时也可能命中直连。
 
-- [安装、升级与卸载](docs/INSTALL.md)
-- [Proxy Switcher 配置与日常使用](docs/USAGE.md)
-- [常见问题与排查](docs/FAQ.md)
-- [QA 检查清单与验证记录](docs/QA.md)
+## 数据与许可
 
-## 数据与边界
+配置、缓存和日志位于 `~/.fly/`，订阅默认每 24 小时更新。更新失败时尽量保留可用缓存，并在网页提示。`make uninstall` 保留这些数据。
 
-配置和缓存位于 `~/.fly/`，重启、更新后保留节点选择。失败更新保留可用配置和缓存；冷启动可回退上次缓存，网页明确提示。订阅默认每 24 小时更新。HTTP 规则资源直接下载；下载失败或内容为空会显示「尚未就绪」，不能据此认为规则完整生效。
+**订阅链接、配置和缓存含凭据，请勿公开分享。** fly 不提供隐藏进程或绕过终端安全检测的功能。
 
-**订阅地址和缓存含凭据，不要公开分享。** fly 不提供隐藏进程或规避终端安全检测的功能，也不保证本地服务不被识别。
-
-内嵌 [mihomo](https://github.com/MetaCubeX/mihomo) 内核，内置 GeoIP、GeoSite、ASN 基础数据。ASN 数据来自 [MetaCubeX meta-rules-dat](https://github.com/MetaCubeX/meta-rules-dat/releases/tag/latest)，基础数据随二进制发布，订阅规则资源仍需按需下载。许可为 AGPL-3.0，见 [LICENSE](LICENSE)。
+内嵌 [mihomo](https://github.com/MetaCubeX/mihomo) 内核；GeoIP、GeoSite 和 ASN 基础数据随程序提供，订阅规则资源仍按需下载。ASN 数据来自 [MetaCubeX meta-rules-dat](https://github.com/MetaCubeX/meta-rules-dat/releases/tag/latest)。项目采用 AGPL-3.0，见 [LICENSE](LICENSE)。

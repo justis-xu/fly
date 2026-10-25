@@ -6,6 +6,7 @@ import (
 	"fly/internal/config"
 	"net"
 	"net/http/httptest"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -100,5 +101,34 @@ func TestRejectForeignOrigin(t *testing.T) {
 	s.http.Handler.ServeHTTP(w, r)
 	if w.Code != 403 {
 		t.Fatal("foreign-origin request accepted")
+	}
+}
+
+func TestExportedFrontendAssetsAreServed(t *testing.T) {
+	s := New(&app.App{Dir: t.TempDir(), Cfg: config.Default("")}, "test")
+	root := httptest.NewRecorder()
+	s.http.Handler.ServeHTTP(root, httptest.NewRequest("GET", "http://127.0.0.1:7889/", nil))
+	assets := regexp.MustCompile(`(?:src|href)="(/_next/[^"?]+)`).FindAllStringSubmatch(root.Body.String(), -1)
+	if len(assets) == 0 {
+		t.Fatal("management page contains no Next.js assets")
+	}
+	for _, asset := range assets {
+		w := httptest.NewRecorder()
+		s.http.Handler.ServeHTTP(w, httptest.NewRequest("GET", "http://127.0.0.1:7889"+asset[1], nil))
+		if w.Code != 200 || w.Body.Len() == 0 {
+			t.Fatalf("missing exported asset: %s (%d)", asset[1], w.Code)
+		}
+		contentType := w.Header().Get("Content-Type")
+		if strings.HasSuffix(asset[1], ".js") && !strings.Contains(contentType, "javascript") {
+			t.Fatalf("script served as %s", contentType)
+		}
+		if strings.HasSuffix(asset[1], ".css") && !strings.Contains(contentType, "text/css") {
+			t.Fatalf("stylesheet served as %s", contentType)
+		}
+	}
+	missing := httptest.NewRecorder()
+	s.http.Handler.ServeHTTP(missing, httptest.NewRequest("GET", "http://127.0.0.1:7889/_next/static/missing.js", nil))
+	if missing.Code != 404 {
+		t.Fatal("missing scripts must not fall back to HTML")
 	}
 }

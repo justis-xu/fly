@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1040" height="380" viewBox="0 0 1040 380" role="img" aria-labelledby="title desc">
+<title id="title">终端安装步骤示意</title><desc id="desc">打开终端，在已经安装 Git、Make、Go 的前提下克隆仓库，进入 fly 目录，执行 make install，fly start，fly ui。</desc>
+<rect width="1040" height="380" rx="20" fill="#f5f8fc"/>
+<g font-family="-apple-system,BlinkMacSystemFont,'PingFang SC','Microsoft YaHei',sans-serif" fill="#25334b">
+<text x="40" y="46" font-size="23" font-weight="600">打开「终端」，按顺序复制命令</text>
+<text x="40" y="77" font-size="15" fill="#738198">按 ⌘ + 空格 → 输入“终端”或 Terminal → 按回车。</text>
+<rect x="40" y="100" width="960" height="230" rx="14" fill="white" stroke="#d9e5f5"/>
+<g font-size="17" font-family="ui-monospace,SFMono-Regular,monospace"><text x="65" y="138">git clone https://github.com/justis-xu/fly.git</text><text x="65" y="176">cd fly</text><text x="65" y="214">make install</text><text x="65" y="252">fly start</text><text x="65" y="290">fly ui</text></g>
+<g font-size="14" fill="#738198"><text x="770" y="176">进入下载的项目目录</text><text x="770" y="214">安装到终端命令目录</text><text x="770" y="252">启动本机服务器</text><text x="770" y="290">打开管理网页</text></g>
+<text x="40" y="359" font-size="14" fill="#738198">操作示意：前提是已安装 Git、Make、Go 1.26.2+，且具备此 GitHub 仓库的访问权限。</text>
+</g></svg>

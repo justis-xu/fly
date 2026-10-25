@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1040" height="330" viewBox="0 0 1040 330" role="img" aria-labelledby="title desc">
+<title id="title">浏览器如何通过 Proxy Switcher 使用 fly</title><desc id="desc">浏览器请求先由 Proxy Switcher 交给本机 fly 的 7888 端口，再由订阅节点提供出口。7889 端口仅用于打开管理网页。</desc>
+<rect width="1040" height="330" rx="20" fill="#f5f8fc"/>
+<g font-family="-apple-system,BlinkMacSystemFont,'PingFang SC','Microsoft YaHei',sans-serif" fill="#25334b">
+<text x="40" y="44" font-size="22" font-weight="600">先分清：插件、服务器、订阅节点</text>
+<g fill="white" stroke="#d9e5f5"><rect x="40" y="78" width="170" height="120" rx="14"/><rect x="260" y="78" width="220" height="120" rx="14"/><rect x="530" y="78" width="210" height="120" rx="14"/><rect x="790" y="78" width="210" height="120" rx="14"/></g>
+<g text-anchor="middle"><text x="125" y="120" font-size="20" font-weight="600">浏览器</text><text x="125" y="153" font-size="14" fill="#738198">你正在访问的网站</text>
+<text x="370" y="120" font-size="20" font-weight="600">Proxy Switcher</text><text x="370" y="153" font-size="14" fill="#738198">把请求交给本机服务器</text>
+<text x="635" y="115" font-size="20" font-weight="600" fill="#3568df">fly</text><text x="635" y="146" font-size="17" font-family="monospace">127.0.0.1:7888</text><text x="635" y="174" font-size="13" fill="#738198">HTTP / SOCKS5</text>
+<text x="895" y="120" font-size="20" font-weight="600">你的订阅节点</text><text x="895" y="153" font-size="14" fill="#738198">提供代理出口</text></g>
+<g fill="none" stroke="#3568df" stroke-width="3"><path d="M222 138h24m-8-7 8 7-8 7M492 138h24m-8-7 8 7-8 7M752 138h24m-8-7 8 7-8 7"/></g>
+<rect x="40" y="225" width="960" height="72" rx="12" fill="#eaf2ff"/>
+<text x="62" y="255" font-size="16" fill="#315ba6">管理网页：http://127.0.0.1:7889　只用来选节点、测速、修改订阅。</text>
+<text x="62" y="280" font-size="14" fill="#315ba6">不要把 7889 填进插件。fly 不附带订阅，也不会自动接管浏览器流量。</text>
+</g></svg>

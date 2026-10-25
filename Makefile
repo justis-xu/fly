@@ -1,4 +1,5 @@
-.PHONY: build install uninstall clean
+.PHONY: build frontend check install uninstall clean
+.DEFAULT_GOAL := build
 
 BIN ?= fly
 
@@ -12,6 +13,14 @@ endif
 ifeq ($(DEST),)
 DEST := $(shell go env GOPATH)/bin
 endif
+
+frontend:
+	cd web && npm ci --no-fund --no-audit && npm run build
+
+check:
+	cd web && npm ci --no-fund --no-audit && npm test && npm run typecheck
+	go test -race ./...
+	go vet ./...
 
 build:
 	go build -o $(BIN) .

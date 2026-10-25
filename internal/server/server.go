@@ -5,6 +5,7 @@ import (
 	"embed"
 	"encoding/json"
 	"io"
+	"io/fs"
 	"log"
 	"net"
 	"net/http"
@@ -21,7 +22,7 @@ import (
 	"github.com/metacubex/mihomo/tunnel"
 )
 
-//go:embed index.html
+//go:embed all:ui
 var content embed.FS
 
 type Server struct {
@@ -36,7 +37,7 @@ type Server struct {
 func New(a *app.App, version string) *Server {
 	s := &Server{app: a, version: version}
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /{$}", s.handleIndex)
+	mux.HandleFunc("GET /", s.handleStatic)
 	mux.HandleFunc("GET /api/info", s.handleInfo)
 	mux.HandleFunc("GET /api/subscription", s.handleGetSubscription)
 	mux.HandleFunc("POST /api/subscription", s.handleSetSubscription)
@@ -92,10 +93,18 @@ func writeJSON(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(v)
 }
-func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
-	b, _ := content.ReadFile("index.html")
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_, _ = w.Write(b)
+func (s *Server) handleStatic(w http.ResponseWriter, r *http.Request) {
+	root, err := fs.Sub(content, "ui")
+	if err != nil {
+		http.Error(w, "管理网页资源缺失", 500)
+		return
+	}
+	if strings.HasPrefix(r.URL.Path, "/_next/static/") {
+		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+	} else {
+		w.Header().Set("Cache-Control", "no-store")
+	}
+	http.FileServer(http.FS(root)).ServeHTTP(w, r)
 }
 func (s *Server) handleInfo(w http.ResponseWriter, r *http.Request) {
 	info, nodes, skipped, lastErr := s.app.Snapshot()

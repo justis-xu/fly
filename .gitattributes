@@ -1,0 +1,2 @@
+# Keep upstream-generated bundles intact; review and whitespace-check their sources.
+internal/server/ui/** linguist-generated=true -whitespace
