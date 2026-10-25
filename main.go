@@ -18,6 +18,7 @@ import (
 	"fly/internal/core"
 	"fly/internal/daemon"
 	"fly/internal/server"
+	"fly/internal/sub"
 )
 
 const version = "0.1.0"
@@ -117,7 +118,7 @@ func serve(daemonized bool) {
 	if err := core.Init(a.Dir); err != nil {
 		fatal(err)
 	}
-	a.SetStarting(a.SubscriptionURL() != "")
+	a.SetStarting(a.HasSubscription())
 	srv := server.New(a, version)
 	if err := srv.Start(); err != nil {
 		fatal(fmt.Errorf("管理端口启动失败: %w", err))
@@ -127,7 +128,7 @@ func serve(daemonized bool) {
 	}
 	go func() {
 		for range time.Tick(time.Duration(a.Cfg.RefreshHours) * time.Hour) {
-			if a.SubscriptionURL() == "" {
+			if !a.HasSubscription() || a.ConfigSnapshot().Imported {
 				continue
 			}
 			if err := a.Refresh(); err != nil {
@@ -311,6 +312,10 @@ func cmdInit() {
 
 	a := mustApp()
 	if *url != "" {
+		if err := sub.ValidateURL(*url); err != nil {
+			fatal(err)
+		}
+		a.Cfg.Imported = false
 		a.Cfg.SubscriptionURL = *url
 	}
 	if *port != 0 {
@@ -323,6 +328,14 @@ func cmdInit() {
 		fmt.Println("配置已保存")
 	}
 	fmt.Printf("配置文件: %s\n", filepath.Join(a.Dir, "fly.yaml"))
-	fmt.Printf("订阅地址: %s\n", a.Cfg.SubscriptionURL)
+	fmt.Printf("订阅来源: %s\n", func() string {
+		if a.Cfg.Imported {
+			return "本地导入"
+		}
+		if a.Cfg.SubscriptionURL != "" {
+			return "已设置（管理页可查看）"
+		}
+		return "尚未设置"
+	}())
 	fmt.Printf("代理端口: %d\n", a.Cfg.MixedPort)
 }

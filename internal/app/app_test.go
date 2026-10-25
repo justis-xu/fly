@@ -112,7 +112,7 @@ func TestColdStartFallsBackAfterInvalidCoreConfig(t *testing.T) {
 	cfg := config.Default("")
 	cfg.SubscriptionURL = source.URL
 	cfg.MixedPort = 0
-	cached := []byte("proxies:\n  - {name: cached, type: http, server: example.com, port: 80}\nrules:\n  - MATCH,DIRECT\n")
+	cached := []byte("proxies:\n  - {name: cached, type: http, server: 127.0.0.1, port: 1}\nrules:\n  - MATCH,DIRECT\n")
 	if err := os.WriteFile(filepath.Join(dir, "sub-cache.txt"), cached, 0600); err != nil {
 		t.Fatal(err)
 	}

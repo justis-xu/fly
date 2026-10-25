@@ -34,6 +34,7 @@ func Init(homeDir string) error {
 // Options 生成 mihomo 配置所需的参数。
 type Options struct {
 	MixedPort int // 本地混合代理端口
+	UserRules []string
 }
 
 type Routing struct {
@@ -56,6 +57,7 @@ func BuildConfig(proxies []map[string]any, routing Routing, opt Options) ([]byte
 			"MATCH," + GroupProxy,
 		}
 	}
+	rules = append(append([]string{}, opt.UserRules...), rules...)
 	names := make([]string, 0, len(proxies))
 	for _, p := range proxies {
 		names = append(names, p["name"].(string))
@@ -77,12 +79,14 @@ func BuildConfig(proxies []map[string]any, routing Routing, opt Options) ([]byte
 				"proxies": append([]string{GroupAuto, "DIRECT"}, names...),
 			},
 			{
-				"name":      GroupAuto,
-				"type":      "url-test",
-				"url":       "https://www.gstatic.com/generate_204",
-				"interval":  300,
-				"tolerance": 50,
-				"proxies":   names,
+				"name":            GroupAuto,
+				"type":            "url-test",
+				"url":             "https://www.gstatic.com/generate_204",
+				"interval":        300,
+				"timeout":         5000,
+				"expected-status": "204",
+				"tolerance":       50,
+				"proxies":         names,
 			},
 		},
 		"rules": rules,
@@ -98,7 +102,9 @@ func BuildConfig(proxies []map[string]any, routing Routing, opt Options) ([]byte
 			case "http":
 				// Bootstrap rule downloads without depending on the selected node.
 				provider["proxy"] = "DIRECT"
-				provider["path"] = fmt.Sprintf("./rules/%x", sha256.Sum256([]byte(fmt.Sprint(name, "\x00", provider["url"], "\x00", provider["behavior"], "\x00", provider["format"]))))
+				// fly refreshes rule resources transactionally with the subscription.
+				provider["interval"] = 0
+				provider["path"] = RuleCachePath(name, provider)
 			case "inline":
 			default:
 				return nil, fmt.Errorf("规则集 %s 的类型不受支持", name)
@@ -118,6 +124,8 @@ func BuildConfig(proxies []map[string]any, routing Routing, opt Options) ([]byte
 
 // Start 启动或热重载内核，不开启独立控制端口。
 func Start(cfgBytes []byte) error {
+	Runtime.Lock()
+	defer Runtime.Unlock()
 	var expected struct {
 		Port int `yaml:"mixed-port"`
 	}
@@ -164,4 +172,8 @@ func extractGeoFiles(homeDir string) error {
 		}
 	}
 	return nil
+}
+
+func RuleCachePath(name string, provider map[string]any) string {
+	return fmt.Sprintf("./rules/%x", sha256.Sum256([]byte(fmt.Sprint(name, "\x00", provider["url"], "\x00", provider["behavior"], "\x00", provider["format"]))))
 }

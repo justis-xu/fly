@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"github.com/metacubex/mihomo/adapter"
 	"net"
 	"net/url"
 	"strconv"
@@ -33,7 +34,7 @@ func b64Decode(s string) ([]byte, error) {
 
 // ParseLinks 把订阅的分享链接列表（每行一条）解析为 mihomo proxies 条目。
 func ParseLinks(text string) (proxies []map[string]any, skipped int) {
-	seen := map[string]int{}
+	seen := map[string]bool{}
 	for _, line := range strings.Split(text, "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" {
@@ -66,48 +67,73 @@ func ParseLinks(text string) (proxies []map[string]any, skipped int) {
 			continue
 		}
 		name, _ := m["name"].(string)
-		if name == "" || isPlaceholder(name) {
+		if isPlaceholder(name) {
 			skipped++
 			continue
 		}
-		if n, dup := seen[name]; dup {
-			seen[name] = n + 1
-			m["name"] = fmt.Sprintf("%s #%d", name, n+1)
-		} else {
-			seen[name] = 1
+		if name == "" {
+			name = fmt.Sprint(m["type"]) + " · " + fmt.Sprint(m["server"])
+		}
+		m["name"] = uniqueName(name, seen)
+		if !validProxy(m) {
+			skipped++
+			continue
 		}
 		proxies = append(proxies, m)
 	}
 	return proxies, skipped
 }
 
-// FilterProxies 过滤 Clash YAML 订阅自带的 proxies：去占位节点、校验必备字段、去重名。
+// FilterProxies validates each adapter independently: one broken node must not break all.
 func FilterProxies(list []map[string]any) []map[string]any {
-	seen := map[string]int{}
+	seen := map[string]bool{}
 	out := make([]map[string]any, 0, len(list))
-	for _, p := range list {
-		name, _ := p["name"].(string)
-		server, _ := p["server"].(string)
-		_, hasType := p["type"]
-		port := 0
-		switch v := p["port"].(type) {
-		case int:
-			port = v
-		case float64:
-			port = int(v)
+	for _, original := range list {
+		p := map[string]any{}
+		for k, v := range original {
+			p[k] = v
 		}
-		if name == "" || server == "" || !hasType || port == 0 || isPlaceholder(name) {
+		name, _ := p["name"].(string)
+		if isPlaceholder(name) {
 			continue
 		}
-		if n, dup := seen[name]; dup {
-			seen[name] = n + 1
-			p["name"] = fmt.Sprintf("%s #%d", name, n+1)
-		} else {
-			seen[name] = 1
+		if name == "" {
+			name = fmt.Sprint(p["type"]) + " · " + fmt.Sprint(p["server"])
 		}
-		out = append(out, p)
+		p["name"] = uniqueName(name, seen)
+		if validProxy(p) {
+			out = append(out, p)
+		}
 	}
 	return out
+}
+func uniqueName(name string, seen map[string]bool) string {
+	name = strings.TrimSpace(name)
+	if builtinPolicies[name] || name == "🚀 Proxy" || name == "♻️ 自动选择" {
+		name += " (订阅)"
+	}
+	base := name
+	for n := 2; seen[name]; n++ {
+		name = fmt.Sprintf("%s #%d", base, n)
+	}
+	seen[name] = true
+	return name
+}
+func validProxy(p map[string]any) bool {
+	server, _ := p["server"].(string)
+	if server == "" {
+		return false
+	}
+	port, err := strconv.Atoi(fmt.Sprint(p["port"]))
+	if err != nil || port < 1 || port > 65535 {
+		return false
+	}
+	proxy, err := adapter.ParseProxy(p)
+	if err != nil {
+		return false
+	}
+	_ = proxy.Close()
+	return true
 }
 
 func splitHostPort(hostport string) (host string, port int, err error) {
@@ -129,7 +155,11 @@ func parseSS(line string) (map[string]any, error) {
 		name, _ = url.PathUnescape(body[i+1:])
 		body = body[:i]
 	}
-	if i := strings.Index(body, "?"); i >= 0 { // plugin 等参数，忽略
+	if i := strings.Index(body, "?"); i >= 0 {
+		q, _ := url.ParseQuery(body[i+1:])
+		if q.Get("plugin") != "" {
+			return nil, fmt.Errorf("SS plugin 分享链接请改用 Clash YAML")
+		}
 		body = body[:i]
 	}
 	userinfo, hostport := "", ""
@@ -168,7 +198,16 @@ func parseSS(line string) (map[string]any, error) {
 	}, nil
 }
 
-func applyTransport(m map[string]any, q url.Values) {
+func applyTransport(m map[string]any, q url.Values) error {
+	switch q.Get("type") {
+	case "", "tcp", "ws", "grpc", "httpupgrade":
+	default:
+		return fmt.Errorf("不支持此分享链接传输类型，请使用 Clash YAML")
+	}
+	if q.Get("headerType") != "" && q.Get("headerType") != "none" {
+		return fmt.Errorf("不支持此分享链接伪装，请使用 Clash YAML")
+	}
+
 	headers := func() map[string]any {
 		if h := q.Get("host"); h != "" {
 			return map[string]any{"Host": h}
@@ -180,15 +219,19 @@ func applyTransport(m map[string]any, q url.Values) {
 		m["network"] = "ws"
 		ws := map[string]any{}
 		path := q.Get("path")
-		if i := strings.Index(path, "?"); i >= 0 {
-			for _, kv := range strings.Split(path[i+1:], "&") {
-				k, v, _ := strings.Cut(kv, "=")
-				if k == "ed" {
-					ws["max-early-data"], _ = strconv.Atoi(v)
-					ws["early-data-header-name"] = "Sec-WebSocket-Protocol"
+		if parsed, err := url.Parse(path); err == nil {
+			params := parsed.Query()
+			if ed := params.Get("ed"); ed != "" {
+				n, err := strconv.Atoi(ed)
+				if err != nil || n < 0 {
+					return fmt.Errorf("无效 early data")
 				}
+				ws["max-early-data"] = n
+				ws["early-data-header-name"] = "Sec-WebSocket-Protocol"
+				params.Del("ed")
+				parsed.RawQuery = params.Encode()
+				path = parsed.String()
 			}
-			path = path[:i]
 		}
 		if path != "" {
 			ws["path"] = path
@@ -215,6 +258,7 @@ func applyTransport(m map[string]any, q url.Values) {
 		}
 		m["httpupgrade-opts"] = hu
 	}
+	return nil
 }
 
 func applyTLS(m map[string]any, q url.Values) {
@@ -257,6 +301,12 @@ func parseVLESS(line string) (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
+	if security := u.Query().Get("security"); security != "" && security != "none" && security != "tls" && security != "reality" {
+		return nil, fmt.Errorf("不支持此分享链接安全类型，请改用 Clash YAML")
+	}
+	if enc := u.Query().Get("encryption"); enc != "" && enc != "none" {
+		return nil, fmt.Errorf("不支持此 VLESS encryption，请改用 Clash YAML")
+	}
 	uuid := u.User.Username()
 	host := u.Hostname()
 	port, err := strconv.Atoi(u.Port())
@@ -270,7 +320,9 @@ func parseVLESS(line string) (map[string]any, error) {
 		"name": u.Fragment, "type": "vless", "server": host, "port": port,
 		"uuid": uuid, "udp": true,
 	}
-	applyTransport(m, u.Query())
+	if err := applyTransport(m, u.Query()); err != nil {
+		return nil, err
+	}
 	if flow := u.Query().Get("flow"); flow != "" {
 		m["flow"] = flow
 	}
@@ -308,6 +360,9 @@ func parseVMess(line string) (map[string]any, error) {
 	case float64:
 		port = int(p)
 	}
+	if (v.Net == "tcp" || v.Net == "") && v.Type != "" && v.Type != "none" {
+		return nil, fmt.Errorf("不支持此 VMess TCP 伪装，请改用 Clash YAML")
+	}
 	if v.Add == "" || v.ID == "" || port == 0 {
 		return nil, fmt.Errorf("incomplete vmess link")
 	}
@@ -336,7 +391,9 @@ func parseVMess(line string) (map[string]any, error) {
 			q.Set(k, val)
 		}
 	}
-	applyTransport(m, q)
+	if err := applyTransport(m, q); err != nil {
+		return nil, err
+	}
 	if v.TLS == "tls" || v.TLS == "reality" {
 		q2 := url.Values{"security": {v.TLS}}
 		if v.SNI != "" {
@@ -374,7 +431,9 @@ func parseTrojan(line string) (map[string]any, error) {
 	if sni := u.Query().Get("sni"); sni != "" {
 		m["servername"] = sni
 	}
-	applyTransport(m, u.Query())
+	if err := applyTransport(m, u.Query()); err != nil {
+		return nil, err
+	}
 	applyTLS(m, u.Query())
 	return m, nil
 }

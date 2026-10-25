@@ -7,11 +7,15 @@ import (
 	"path/filepath"
 	"strconv"
 
+	"fly/internal/storage"
+	"fly/internal/sub"
 	"gopkg.in/yaml.v3"
 )
 
 type Config struct {
 	SubscriptionURL string `yaml:"subscription-url"`
+	DownloadProxy   string `yaml:"download-proxy,omitempty"`
+	Imported        bool   `yaml:"imported,omitempty"`
 	MixedPort       int    `yaml:"mixed-port"`
 	AdminAddr       string `yaml:"admin-addr"`
 	RefreshHours    int    `yaml:"refresh-hours"`
@@ -61,10 +65,13 @@ func Save(dataDir string, c *Config) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(dataDir, "fly.yaml"), b, 0o600)
+	return storage.WriteFile(filepath.Join(dataDir, "fly.yaml"), b)
 }
 
 func (c *Config) Validate() error {
+	if err := sub.ValidateProxy(c.DownloadProxy); err != nil {
+		return err
+	}
 	if c.MixedPort < 1 || c.MixedPort > 65535 {
 		return fmt.Errorf("代理端口须在 1–65535 之间")
 	}

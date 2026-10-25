@@ -1,3 +1,253 @@
+--- a/adapter/inbound/auth.go
++++ b/adapter/inbound/auth.go
+@@ -3,18 +3,26 @@
+ import (
+ 	"net"
+ 	"net/netip"
++	"slices"
++	"sync"
+ 
+ 	C "github.com/metacubex/mihomo/constant"
+ )
+ 
++var authMu sync.RWMutex
++
+ var skipAuthPrefixes []netip.Prefix
+ 
+ func SetSkipAuthPrefixes(prefixes []netip.Prefix) {
+-	skipAuthPrefixes = prefixes
++	authMu.Lock()
++	defer authMu.Unlock()
++	skipAuthPrefixes = slices.Clone(prefixes)
+ }
+ 
+ func SkipAuthPrefixes() []netip.Prefix {
+-	return skipAuthPrefixes
++	authMu.RLock()
++	defer authMu.RUnlock()
++	return slices.Clone(skipAuthPrefixes)
+ }
+ 
+ func SkipAuthRemoteAddr(addr net.Addr) bool {
+@@ -34,5 +42,7 @@
+ }
+ 
+ func skipAuth(addr netip.Addr) bool {
++	authMu.RLock()
++	defer authMu.RUnlock()
+ 	return prefixesContains(skipAuthPrefixes, addr)
+ }
+--- a/adapter/inbound/ipfilter.go
++++ b/adapter/inbound/ipfilter.go
+@@ -3,27 +3,39 @@
+ import (
+ 	"net"
+ 	"net/netip"
++	"slices"
++	"sync"
+ 
+ 	C "github.com/metacubex/mihomo/constant"
+ )
++
++var filterMu sync.RWMutex
+ 
+ var lanAllowedIPs []netip.Prefix
+ var lanDisAllowedIPs []netip.Prefix
+ 
+ func SetAllowedIPs(prefixes []netip.Prefix) {
+-	lanAllowedIPs = prefixes
++	filterMu.Lock()
++	defer filterMu.Unlock()
++	lanAllowedIPs = slices.Clone(prefixes)
+ }
+ 
+ func SetDisAllowedIPs(prefixes []netip.Prefix) {
+-	lanDisAllowedIPs = prefixes
++	filterMu.Lock()
++	defer filterMu.Unlock()
++	lanDisAllowedIPs = slices.Clone(prefixes)
+ }
+ 
+ func AllowedIPs() []netip.Prefix {
+-	return lanAllowedIPs
++	filterMu.RLock()
++	defer filterMu.RUnlock()
++	return slices.Clone(lanAllowedIPs)
+ }
+ 
+ func DisAllowedIPs() []netip.Prefix {
+-	return lanDisAllowedIPs
++	filterMu.RLock()
++	defer filterMu.RUnlock()
++	return slices.Clone(lanDisAllowedIPs)
+ }
+ 
+ func IsRemoteAddrDisAllowed(addr net.Addr) bool {
+@@ -39,9 +51,13 @@
+ }
+ 
+ func isAllowed(addr netip.Addr) bool {
++	filterMu.RLock()
++	defer filterMu.RUnlock()
+ 	return prefixesContains(lanAllowedIPs, addr)
+ }
+ 
+ func isDisAllowed(addr netip.Addr) bool {
++	filterMu.RLock()
++	defer filterMu.RUnlock()
+ 	return prefixesContains(lanDisAllowedIPs, addr)
+ }
+--- a/adapter/outboundgroup/selector.go
++++ b/adapter/outboundgroup/selector.go
+@@ -4,6 +4,7 @@
+ 	"context"
+ 	"encoding/json"
+ 	"errors"
++	"sync"
+ 
+ 	C "github.com/metacubex/mihomo/constant"
+ 	P "github.com/metacubex/mihomo/constant/provider"
+@@ -16,6 +17,7 @@
+ type Selector struct {
+ 	*GroupBase
+ 	disableUDP bool
++	selectedMu sync.RWMutex
+ 	selected   string
+ 	testUrl    string
+ }
+@@ -83,7 +85,9 @@
+ func (s *Selector) Set(name string) error {
+ 	for _, proxy := range s.GetProxies(false) {
+ 		if proxy.Name() == name {
++			s.selectedMu.Lock()
+ 			s.selected = name
++			s.selectedMu.Unlock()
+ 			return nil
+ 		}
+ 	}
+@@ -92,7 +96,9 @@
+ }
+ 
+ func (s *Selector) ForceSet(name string) {
++	s.selectedMu.Lock()
+ 	s.selected = name
++	s.selectedMu.Unlock()
+ }
+ 
+ // Unwrap implements C.ProxyAdapter
+@@ -101,6 +107,8 @@
+ }
+ 
+ func (s *Selector) selectedProxy(touch bool) C.Proxy {
++	s.selectedMu.RLock()
++	defer s.selectedMu.RUnlock()
+ 	proxies := s.GetProxies(touch)
+ 	for _, proxy := range proxies {
+ 		if proxy.Name() == s.selected {
+--- a/common/queue/queue.go
++++ b/common/queue/queue.go
+@@ -23,26 +23,26 @@
+ 
+ // Pop returns the head of items.
+ func (q *Queue[T]) Pop() (head T) {
++	q.lock.Lock()
++	defer q.lock.Unlock()
+ 	if len(q.items) == 0 {
+ 		return
+ 	}
+ 
+-	q.lock.Lock()
+ 	head = q.items[0]
+ 	q.items = q.items[1:]
+-	q.lock.Unlock()
+ 	return head
+ }
+ 
+ // Last returns the last of item.
+ func (q *Queue[T]) Last() (last T) {
++	q.lock.RLock()
++	defer q.lock.RUnlock()
+ 	if len(q.items) == 0 {
+ 		return
+ 	}
+ 
+-	q.lock.RLock()
+ 	last = q.items[len(q.items)-1]
+-	q.lock.RUnlock()
+ 	return last
+ }
+ 
+--- a/component/resolver/ip4p.go
++++ b/component/resolver/ip4p.go
+@@ -4,26 +4,27 @@
+ 	"net"
+ 	"net/netip"
+ 	"strconv"
++	"sync/atomic"
+ 
+ 	"github.com/metacubex/mihomo/log"
+ )
+ 
+ var (
+-	ip4PEnable bool
++	ip4PEnable atomic.Bool
+ )
+ 
+ func GetIP4PEnable() bool {
+-	return ip4PEnable
++	return ip4PEnable.Load()
+ }
+ 
+ func SetIP4PEnable(enableIP4PConvert bool) {
+-	ip4PEnable = enableIP4PConvert
++	ip4PEnable.Store(enableIP4PConvert)
+ }
+ 
+ // kanged from https://github.com/heiher/frp/blob/ip4p/client/ip4p.go
+ 
+ func LookupIP4P(addr netip.Addr, port string) (netip.Addr, string) {
+-	if ip4PEnable {
++	if ip4PEnable.Load() {
+ 		ip := addr.AsSlice()
+ 		if ip[0] == 0x20 && ip[1] == 0x01 &&
+ 			ip[2] == 0x00 && ip[3] == 0x00 {
+--- a/listener/mixed/mixed.go
++++ b/listener/mixed/mixed.go
+@@ -4,6 +4,7 @@
+ 	"context"
+ 	"errors"
+ 	"net"
++	"sync/atomic"
+ 
+ 	"github.com/metacubex/mihomo/adapter/inbound"
+ 	N "github.com/metacubex/mihomo/common/net"
+@@ -26,7 +27,7 @@
+ type Listener struct {
+ 	listener net.Listener
+ 	addr     string
+-	closed   bool
++	closed   atomic.Bool
+ }
+ 
+ // RawAddress implements C.Listener
+@@ -41,7 +42,7 @@
+ 
+ // Close implements C.Listener
+ func (l *Listener) Close() error {
+-	l.closed = true
++	l.closed.Store(true)
+ 	return l.listener.Close()
+ }
+ 
+@@ -123,7 +124,7 @@
+ 		for {
+ 			c, err := ml.listener.Accept()
+ 			if err != nil {
+-				if ml.closed {
++				if ml.closed.Load() {
+ 					break
+ 				}
+ 				continue
 --- a/log/log.go
 +++ b/log/log.go
 @@ -3,6 +3,7 @@
@@ -40,40 +290,3 @@
  		return
  	}
  
---- a/listener/mixed/mixed.go
-+++ b/listener/mixed/mixed.go
-@@ -4,6 +4,7 @@
- 	"context"
- 	"errors"
- 	"net"
-+	"sync/atomic"
- 
- 	"github.com/metacubex/mihomo/adapter/inbound"
- 	N "github.com/metacubex/mihomo/common/net"
-@@ -26,7 +27,7 @@
- type Listener struct {
- 	listener net.Listener
- 	addr     string
--	closed   bool
-+	closed   atomic.Bool
- }
- 
- // RawAddress implements C.Listener
-@@ -41,7 +42,7 @@
- 
- // Close implements C.Listener
- func (l *Listener) Close() error {
--	l.closed = true
-+	l.closed.Store(true)
- 	return l.listener.Close()
- }
- 
-@@ -123,7 +124,7 @@
- 		for {
- 			c, err := ml.listener.Accept()
- 			if err != nil {
--				if ml.closed {
-+				if ml.closed.Load() {
- 					break
- 				}
- 				continue

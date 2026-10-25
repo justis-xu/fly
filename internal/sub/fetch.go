@@ -1,9 +1,15 @@
 package sub
 
 import (
+	"bytes"
+	"context"
+	"crypto/x509"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -32,44 +38,161 @@ func (i *Info) ExpireTime() time.Time {
 	return time.Unix(i.Expire, 0)
 }
 
-// Fetch 拉取订阅，返回原始响应体与流量信息。订阅域名直连偶发被重置，带重试。
-func Fetch(rawURL string) (body []byte, info *Info, err error) {
-	var lastErr error
-	for attempt := 0; attempt < 3; attempt++ {
-		if attempt > 0 {
-			time.Sleep(time.Duration(attempt) * 2 * time.Second)
-		}
-		body, info, err = fetchOnce(rawURL)
-		if err == nil {
-			return body, info, nil
-		}
-		lastErr = err
-	}
-	return nil, nil, lastErr
+// Fetch downloads directly; it never borrows HTTP_PROXY or a global transport.
+func Fetch(rawURL string) ([]byte, *Info, error) {
+	b, i, _, err := FetchWithOptions(context.Background(), rawURL, FetchOptions{})
+	return b, i, err
 }
 
-func fetchOnce(rawURL string) (body []byte, info *Info, err error) {
-	req, err := http.NewRequest(http.MethodGet, rawURL, nil)
+const MaxBody = 8 << 20
+
+type FetchOptions struct {
+	ProxyURL     string
+	FallbackDial func(context.Context, string, string) (net.Conn, error)
+}
+
+func ValidateURL(raw string) error {
+	u, err := url.Parse(raw)
+	if err != nil || u.Hostname() == "" || (u.Scheme != "http" && u.Scheme != "https") {
+		return fmt.Errorf("订阅地址须是完整的 http:// 或 https:// 链接")
+	}
+	return nil
+}
+func ValidateProxy(raw string) error {
+	if raw == "" {
+		return nil
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.Hostname() == "" || (u.Scheme != "http" && u.Scheme != "https" && u.Scheme != "socks5" && u.Scheme != "socks5h") {
+		return fmt.Errorf("备用下载代理须是 http(s):// 或 socks5:// 地址（含端口）")
+	}
+	if _, err := strconv.Atoi(u.Port()); err != nil {
+		return fmt.Errorf("备用下载代理需要有效端口")
+	}
+	n, _ := strconv.Atoi(u.Port())
+	if n < 1 || n > 65535 {
+		return fmt.Errorf("备用下载代理端口须在 1–65535 之间")
+	}
+	return nil
+}
+
+type responseError struct{ code int }
+
+func (e responseError) Error() string {
+	switch e.code {
+	case 401, 403:
+		return fmt.Sprintf("下载返回 HTTP %d：可能是订阅过期、凭据无效或访问被限制，请向服务商确认", e.code)
+	case 404:
+		return "下载返回 HTTP 404：地址不存在，请复制完整订阅链接"
+	case 413:
+		return "下载内容超过 8 MiB，请使用精简后的订阅"
+	case 204:
+		return "订阅内容为空，请检查服务商提供的链接"
+	case 429:
+		return "下载返回 HTTP 429：请求过于频繁，请稍后再试"
+	default:
+		return fmt.Sprintf("下载返回 HTTP %d，请检查服务商状态", e.code)
+	}
+}
+func safeDownloadError(err error) string {
+	var status responseError
+	if errors.As(err, &status) {
+		return status.Error()
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "连接超时，请检查网络或尝试备用下载代理/本地文件"
+	}
+	var dns *net.DNSError
+	if errors.As(err, &dns) {
+		return "域名解析失败，请检查订阅域名和本机 DNS"
+	}
+	var cert x509.UnknownAuthorityError
+	if errors.As(err, &cert) {
+		return "证书无法验证，请检查系统时间和证书环境"
+	}
+	// Never include URLs, userinfo, node passwords or token-bearing paths in errors.
+	return "连接失败，请检查网络、服务地址或备用下载代理"
+}
+func FetchWithOptions(ctx context.Context, rawURL string, opt FetchOptions) ([]byte, *Info, string, error) {
+	if err := ValidateURL(rawURL); err != nil {
+		return nil, nil, "", err
+	}
+	if err := ValidateProxy(opt.ProxyURL); err != nil {
+		return nil, nil, "", err
+	}
+	ctx, cancel := context.WithTimeout(ctx, 50*time.Second)
+	defer cancel()
+	type route struct {
+		name  string
+		proxy string
+		dial  func(context.Context, string, string) (net.Conn, error)
+	}
+	routes := []route{{name: "直连"}}
+	if opt.ProxyURL != "" {
+		routes = append(routes, route{name: "备用代理", proxy: opt.ProxyURL})
+	}
+	if opt.FallbackDial != nil {
+		routes = append(routes, route{name: "当前节点", dial: opt.FallbackDial})
+	}
+	failures := []string{}
+	for _, r := range routes {
+		if ctx.Err() != nil {
+			break
+		}
+		tr := &http.Transport{Proxy: nil, DialContext: (&net.Dialer{Timeout: 6 * time.Second}).DialContext, TLSHandshakeTimeout: 6 * time.Second, ResponseHeaderTimeout: 8 * time.Second, DisableKeepAlives: true}
+		if r.proxy != "" {
+			u, _ := url.Parse(r.proxy)
+			tr.Proxy = http.ProxyURL(u)
+		}
+		if r.dial != nil {
+			tr.DialContext = r.dial
+		}
+		client := &http.Client{Transport: tr, Timeout: 12 * time.Second, CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) >= 5 {
+				return fmt.Errorf("重定向过多")
+			}
+			return nil
+		}}
+		b, i, err := fetchClient(ctx, client, rawURL)
+		tr.CloseIdleConnections()
+		if err == nil {
+			return b, i, r.name, nil
+		}
+		failures = append(failures, r.name+"："+safeDownloadError(err))
+		var status responseError
+		if errors.As(err, &status) && (status.code == 401 || status.code == 404) {
+			break
+		}
+	}
+	return nil, nil, "", fmt.Errorf("%s", strings.Join(failures, "；"))
+}
+func fetchClient(ctx context.Context, client *http.Client, rawURL string) ([]byte, *Info, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
 		return nil, nil, err
 	}
 	req.Header.Set("User-Agent", fetchUA)
-	client := &http.Client{Timeout: 45 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, nil, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, nil, fmt.Errorf("订阅返回 %s", resp.Status)
+		return nil, nil, responseError{resp.StatusCode}
 	}
-	body, err = io.ReadAll(io.LimitReader(resp.Body, 8<<20))
+	b, err := io.ReadAll(io.LimitReader(resp.Body, MaxBody+1))
 	if err != nil {
 		return nil, nil, err
 	}
-	info = parseUserInfoHeader(resp.Header.Get("Subscription-Userinfo"))
+	if len(b) > MaxBody {
+		return nil, nil, responseError{413}
+	}
+	if len(bytes.TrimSpace(b)) == 0 {
+		return nil, nil, responseError{204}
+	}
+	info := parseUserInfoHeader(resp.Header.Get("Subscription-Userinfo"))
 	info.FetchedAt = time.Now()
-	return body, info, nil
+	return b, info, nil
 }
 
 func parseUserInfoHeader(h string) *Info {
@@ -80,6 +203,9 @@ func parseUserInfoHeader(h string) *Info {
 			continue
 		}
 		n, _ := strconv.ParseInt(v, 10, 64)
+		if n < 0 {
+			n = 0
+		}
 		switch k {
 		case "upload":
 			info.Upload = n
@@ -99,7 +225,7 @@ func parseUserInfoHeader(h string) *Info {
 // yamlProxies 非 nil 时表示源是 Clash 配置，同时可能带 yamlRules。
 func BodyToLinks(body []byte) (linksText string, yamlProxies []map[string]any, yamlRules []string) {
 	t := strings.TrimSpace(string(body))
-	t = strings.TrimLeft(t, "\xef\xbb\xbf")
+	t = strings.TrimPrefix(t, "\xef\xbb\xbf")
 	if t == "" {
 		return "", nil, nil
 	}

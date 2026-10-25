@@ -5,6 +5,7 @@ import (
 	"fly/internal/app"
 	"fly/internal/config"
 	"net"
+	"net/http"
 	"net/http/httptest"
 	"regexp"
 	"strings"
@@ -12,10 +13,14 @@ import (
 )
 
 func TestSubscriptionSaveFailureKeepsOldURL(t *testing.T) {
+	source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("proxies:\n- {name: valid, type: http, server: example.org, port: 80}\n"))
+	}))
+	defer source.Close()
 	a := &app.App{Dir: t.TempDir() + "/missing", Cfg: config.Default("")}
 	old := a.SubscriptionURL()
 	s := New(a, "test")
-	r := httptest.NewRequest("POST", "/api/subscription", strings.NewReader(`{"url":"https://example.org/sub"}`))
+	r := httptest.NewRequest("POST", "/api/subscription", strings.NewReader(`{"url":"`+source.URL+`"}`))
 	r.Host = "127.0.0.1:7889"
 	w := httptest.NewRecorder()
 	s.http.Handler.ServeHTTP(w, r)

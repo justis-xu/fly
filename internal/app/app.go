@@ -1,10 +1,15 @@
 package app
 
 import (
+	"bytes"
+	"context"
+	"fly/internal/storage"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
+	"time"
 
 	"gopkg.in/yaml.v3"
 
@@ -18,15 +23,19 @@ type App struct {
 	Dir string
 	Cfg *config.Config
 
-	refreshMu sync.Mutex
-	mu        sync.Mutex
-	Info      *sub.Info
-	Nodes     int
-	Skipped   int
-	LastErr   string
-	cacheBody []byte
-	cfgBytes  []byte
-	starting  bool // 订阅尚未加载完成（控制台已可访问，代理未就绪）
+	refreshMu         sync.Mutex
+	mu                sync.Mutex
+	Info              *sub.Info
+	Nodes             int
+	Skipped           int
+	LastErr           string
+	cacheBody         []byte
+	cfgBytes          []byte
+	resourcesPrepared bool
+	resourceRefresh   bool
+	DownloadRoute     string
+	generation        uint64
+	starting          bool // 订阅尚未加载完成（控制台已可访问，代理未就绪）
 }
 
 func (a *App) SetStarting(b bool) {
@@ -47,6 +56,12 @@ func New() (*App, error) {
 		return nil, err
 	}
 	dir := filepath.Join(home, ".fly")
+	if custom := os.Getenv("FLY_HOME"); custom != "" {
+		if !filepath.IsAbs(custom) {
+			return nil, fmt.Errorf("FLY_HOME 须为绝对路径")
+		}
+		dir = filepath.Clean(custom)
+	}
 	cfg, err := config.Load(dir)
 	if err != nil {
 		return nil, fmt.Errorf("读取配置失败: %w", err)
@@ -54,35 +69,75 @@ func New() (*App, error) {
 	return &App{Dir: dir, Cfg: cfg}, nil
 }
 
-// LoadSubscription 拉取（或缓存兜底）并解析订阅，生成 mihomo 配置。
-func (a *App) LoadSubscription() error {
-	u := a.SubscriptionURL()
-	if u == "" {
-		return fmt.Errorf("请先在管理网页填写订阅地址")
+func (a *App) ConfigSnapshot() config.Config { a.mu.Lock(); defer a.mu.Unlock(); return *a.Cfg }
+func (a *App) HasSubscription() bool {
+	c := a.ConfigSnapshot()
+	return c.Imported || c.SubscriptionURL != ""
+}
+func (a *App) Generation() uint64 { a.mu.Lock(); defer a.mu.Unlock(); return a.generation }
+func (a *App) SourceStatus() (bool, string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.Cfg.Imported, a.DownloadRoute
+}
+func (a *App) fetchOptions() sub.FetchOptions {
+	c := a.ConfigSnapshot()
+	opt := sub.FetchOptions{ProxyURL: c.DownloadProxy}
+	if p, err := core.SelectedProxy(); err == nil {
+		opt.FallbackDial = core.ProxyDial(p)
 	}
-	body, info, err := sub.Fetch(u)
-	if err != nil {
-		a.setLastErr(err.Error())
-		if cerr := a.loadFromCache(); cerr != nil {
-			return fmt.Errorf("拉取订阅失败: %v（%w）", err, cerr)
-		}
-		return nil
+	return opt
+}
+func (a *App) sourceKey() string {
+	if a.Cfg.Imported {
+		return "local-import"
 	}
+	return a.Cfg.SubscriptionURL
+}
 
-	proxies, rules, skipped, perr := parseBody(body)
-	if perr != nil {
-		// 拉到了但解析不出节点（可能是网关页/空响应），回退缓存
-		a.setLastErr(perr.Error())
-		if cerr := a.loadFromCache(); cerr != nil {
-			return fmt.Errorf("%v（%w）", perr, cerr)
-		}
+// LoadSubscription prepares a candidate. Cache fallback is only for its accepted source.
+func (a *App) LoadSubscription() error {
+	if !a.HasSubscription() {
+		return fmt.Errorf("请先在管理网页填写订阅地址或导入订阅文件")
+	}
+	if a.Cfg.Imported {
+		return a.loadFromCache()
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	body, info, route, err := sub.FetchWithOptions(ctx, a.SubscriptionURL(), a.fetchOptions())
+	if err == nil {
+		body, err = sub.ExpandProviders(ctx, body, a.fetchOptions())
+	}
+	if err == nil {
+		err = a.prepare(body, info)
+		a.DownloadRoute = route
+		a.resourceRefresh = true
+	}
+	if err == nil {
 		return nil
 	}
-	if err := a.applyResult(proxies, rules, skipped, info); err != nil {
+	a.setLastErr(sub.Redact(err.Error()))
+	if cacheErr := a.loadFromCache(); cacheErr != nil {
+		return fmt.Errorf("%s（此订阅无可用缓存）", sub.Redact(err.Error()))
+	}
+	return nil
+}
+func (a *App) prepare(body []byte, info *sub.Info) error {
+	if len(body) > sub.MaxBody {
+		return fmt.Errorf("订阅文件超过 8 MiB")
+	}
+	if bytes.HasPrefix(bytes.TrimSpace(body), []byte("<")) {
+		return fmt.Errorf("收到的是网页而非订阅，请复制服务商提供的 Clash/Mihomo 订阅链接")
+	}
+	proxies, rules, skipped, err := parseBody(body)
+	if err != nil {
+		return err
+	}
+	if err = a.applyResult(proxies, rules, skipped, info); err != nil {
 		return err
 	}
 	a.cacheBody = body
-	a.setLastErr("")
 	return nil
 }
 
@@ -109,26 +164,44 @@ func parseBody(body []byte) (proxies []map[string]any, rules core.Routing, skipp
 	} else {
 		proxies, skipped = sub.ParseLinks(links)
 	}
+	if len(proxies) > 2000 {
+		return nil, core.Routing{}, 0, fmt.Errorf("最多支持 2000 个节点，请精简订阅")
+	}
 	if len(proxies) == 0 {
-		return nil, core.Routing{}, 0, fmt.Errorf("订阅内容解析不出节点")
+		return nil, core.Routing{}, 0, fmt.Errorf("没有受支持的有效节点：请使用含 proxies 的 Clash/Mihomo YAML，或 SS/VLESS/VMess/Trojan/Hysteria2 分享链接列表；不要填写服务商登录页")
 	}
 	return proxies, rules, skipped, nil
 }
 
 func (a *App) loadFromCache() error {
-	body, info, ok := sub.LoadCache(a.Dir)
+	body, info, ok := sub.LoadSourceCache(a.Dir, a.sourceKey())
+	if !ok && !a.Cfg.Imported {
+		// One-time compatibility path: only a cold start of the accepted URL may migrate legacy data.
+		if _, err := os.Stat(filepath.Join(a.Dir, "subscription.json")); os.IsNotExist(err) {
+			body, info, ok = sub.LoadCache(a.Dir)
+		}
+	}
 	if !ok {
-		return fmt.Errorf("无可用缓存")
+		return fmt.Errorf("此订阅无可用缓存")
 	}
-	proxies, rules, skipped, err := parseBody(body)
-	if err != nil {
-		return fmt.Errorf("缓存也无法解析: %w", err)
+	if err := a.prepare(body, info); err != nil {
+		return fmt.Errorf("缓存无效：%w", err)
 	}
-	return a.applyResult(proxies, rules, skipped, info)
+	a.resourceRefresh = false
+	a.DownloadRoute = "本地文件"
+	if !a.Cfg.Imported {
+		a.DownloadRoute = "缓存"
+	}
+	return nil
 }
 
 func (a *App) applyResult(proxies []map[string]any, rules core.Routing, skipped int, info *sub.Info) error {
+	overrides, err := config.LoadRules(a.Dir)
+	if err != nil {
+		return err
+	}
 	cfgBytes, err := core.BuildConfig(proxies, rules, core.Options{
+		UserRules: config.RuleLines(overrides, core.GroupProxy),
 		MixedPort: a.Cfg.MixedPort,
 	})
 	if err != nil {
@@ -143,51 +216,163 @@ func (a *App) applyResult(proxies []map[string]any, rules core.Routing, skipped 
 	return nil
 }
 
-// StartCore 启动内核；再次调用即热重载（订阅更新）。
+// StartCore activates a prepared candidate. Persistence belongs to the transaction below.
 func (a *App) StartCore() error {
 	a.mu.Lock()
-	cfgBytes := a.cfgBytes
+	data := a.cfgBytes
 	a.mu.Unlock()
-	if len(cfgBytes) == 0 {
+	if len(data) == 0 {
 		return fmt.Errorf("尚未加载订阅")
 	}
-	if err := core.Start(cfgBytes); err != nil {
-		return err
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+	if !a.resourcesPrepared {
+		if err := a.prepareRuleResources(ctx); err != nil {
+			return err
+		}
 	}
-	if a.cacheBody != nil {
-		sub.SaveCache(a.Dir, a.cacheBody, a.Info)
+	if err := core.Start(data); err != nil {
+		return fmt.Errorf("订阅内核配置无效：%s", sub.Redact(err.Error()))
 	}
 	return nil
 }
 
-// Refresh 重新拉取订阅并热重载。
+// Refresh never replaces a working runtime with a failed download or unrelated cache.
 func (a *App) Refresh() error {
 	a.refreshMu.Lock()
 	defer a.refreshMu.Unlock()
-	a.mu.Lock()
-	cfg := *a.Cfg
-	a.mu.Unlock()
+	cfg := a.ConfigSnapshot()
 	candidate := &App{Dir: a.Dir, Cfg: &cfg}
 	err := candidate.LoadSubscription()
+	a.mu.Lock()
+	hasRuntime := len(a.cfgBytes) > 0
+	a.mu.Unlock()
+	if err == nil && candidate.LastErr != "" && hasRuntime {
+		err = fmt.Errorf("%s；继续保留当前配置", candidate.LastErr)
+	}
 	if err == nil {
 		err = candidate.StartCore()
 	}
-	if err != nil {
-		original := err
+	if err != nil && !hasRuntime && a.HasSubscription() {
 		cached := &App{Dir: a.Dir, Cfg: &cfg}
-		if err = cached.loadFromCache(); err == nil {
-			err = cached.StartCore()
+		if cacheErr := cached.loadFromCache(); cacheErr == nil {
+			if cacheErr = cached.StartCore(); cacheErr == nil {
+				cached.LastErr = sub.Redact(err.Error())
+				candidate = cached
+				err = nil
+			}
 		}
-		if err != nil {
-			return fmt.Errorf("订阅加载失败: %v（缓存不可用: %w）", original, err)
-		}
-		cached.setLastErr(original.Error())
-		candidate = cached
 	}
-	a.mu.Lock()
-	a.Info, a.Nodes, a.Skipped, a.LastErr, a.cfgBytes = candidate.Info, candidate.Nodes, candidate.Skipped, candidate.LastErr, candidate.cfgBytes
-	a.mu.Unlock()
+	if err != nil {
+		a.setLastErr(sub.Redact(err.Error()))
+		return err
+	}
+	if err = sub.SaveSourceCache(a.Dir, candidate.sourceKey(), candidate.cacheBody, candidate.Info); err != nil {
+		a.rollbackCore()
+		a.setLastErr("配置已加载，但缓存写入失败，请检查数据目录权限/磁盘空间")
+		return fmt.Errorf("缓存写入失败，请检查数据目录权限/磁盘空间")
+	}
+	a.adopt(candidate)
 	return nil
+}
+func (a *App) adopt(candidate *App) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.Info, a.Nodes, a.Skipped, a.LastErr, a.cfgBytes, a.cacheBody = candidate.Info, candidate.Nodes, candidate.Skipped, candidate.LastErr, candidate.cfgBytes, candidate.cacheBody
+	a.Cfg.SubscriptionURL = candidate.Cfg.SubscriptionURL
+	a.Cfg.DownloadProxy = candidate.Cfg.DownloadProxy
+	a.Cfg.Imported = candidate.Cfg.Imported
+	a.DownloadRoute = candidate.DownloadRoute
+	a.generation++
+}
+
+// ChangeSubscription validates a completely new source without consulting the old cache.
+// The request is synchronous so a successful response means the candidate really activated.
+func (a *App) ChangeSubscription(ctx context.Context, rawURL, downloadProxy string, imported []byte) error {
+	a.refreshMu.Lock()
+	defer a.refreshMu.Unlock()
+	ctx, cancel := context.WithTimeout(ctx, 90*time.Second)
+	defer cancel()
+	rawURL = strings.TrimSpace(rawURL)
+	downloadProxy = strings.TrimSpace(downloadProxy)
+	if err := sub.ValidateProxy(downloadProxy); err != nil {
+		return err
+	}
+	old := a.ConfigSnapshot()
+	cfg := old
+	cfg.SubscriptionURL = rawURL
+	cfg.DownloadProxy = downloadProxy
+	cfg.Imported = imported != nil
+	candidate := &App{Dir: a.Dir, Cfg: &cfg}
+	opt := candidate.fetchOptions()
+	var body []byte
+	var info *sub.Info
+	var route string
+	var err error
+	if imported != nil {
+		if len(imported) == 0 || len(imported) > sub.MaxBody {
+			return fmt.Errorf("文件为空或超过 8 MiB")
+		}
+		cfg.SubscriptionURL = ""
+		body = imported
+		info = &sub.Info{FetchedAt: time.Now()}
+		route = "本地文件"
+	} else {
+		body, info, route, err = sub.FetchWithOptions(ctx, rawURL, opt)
+		if err != nil {
+			return err
+		}
+	}
+	body, err = sub.ExpandProviders(ctx, body, opt)
+	if err != nil {
+		return err
+	}
+	if err = candidate.prepare(body, info); err != nil {
+		return err
+	}
+	candidate.DownloadRoute = route
+	candidate.resourceRefresh = true
+	if err = candidate.prepareRuleResources(ctx); err != nil {
+		return err
+	}
+	if ctx.Err() != nil {
+		return fmt.Errorf("操作已取消，原配置已保留")
+	}
+	// Persist only after syntax/node validation. Failed activation restores the old disk state.
+	oldDisk, diskErr := os.ReadFile(filepath.Join(a.Dir, "fly.yaml"))
+	if err = config.Save(a.Dir, &cfg); err != nil {
+		return fmt.Errorf("保存配置失败，请检查数据目录权限/磁盘空间")
+	}
+	rollback := func() {
+		if diskErr == nil {
+			_ = storage.WriteFile(filepath.Join(a.Dir, "fly.yaml"), oldDisk)
+		} else {
+			_ = os.Remove(filepath.Join(a.Dir, "fly.yaml"))
+		}
+		a.rollbackCore()
+	}
+	if err = candidate.StartCore(); err != nil {
+		rollback()
+		return err
+	}
+	if err = sub.SaveSourceCache(a.Dir, candidate.sourceKey(), body, info); err != nil {
+		rollback()
+		return fmt.Errorf("缓存保存失败，已保留原配置，请检查磁盘空间/权限")
+	}
+	a.adopt(candidate)
+	return nil
+}
+
+// rollbackCore restores the previous runtime after an activation/persistence failure.
+func (a *App) rollbackCore() {
+	a.mu.Lock()
+	previous := a.cfgBytes
+	a.mu.Unlock()
+	if len(previous) > 0 {
+		_ = core.Start(previous)
+	} else {
+		core.StopMixed()
+	}
 }
 
 func (a *App) setLastErr(s string) {
@@ -221,9 +406,9 @@ func (a *App) SetSubscriptionURL(u string) error {
 
 // Initialize keeps the management page available even if a subscription is absent or invalid.
 func (a *App) Initialize() error {
-	a.SetStarting(a.SubscriptionURL() != "")
+	a.SetStarting(a.HasSubscription())
 	defer a.SetStarting(false)
-	if a.SubscriptionURL() == "" {
+	if !a.HasSubscription() {
 		return nil
 	}
 	if err := a.Refresh(); err != nil {
