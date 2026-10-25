@@ -63,7 +63,9 @@ go build -o fly .
 git diff --check
 ```
 
-或者使用 `make check` 做交互、类型、Go 测试和 vet；发布前仍需先 `make frontend`，检查生成资源是否与源码同步。CI 会重建前端并检查 `internal/server/ui/` 没有差异，再执行 Go 检查。
+或者使用 `make check` 做交互、类型、Go 测试和 vet；发布前仍需先 `make frontend`，检查生成资源是否与源码同步。CI 会重建前端，并逐一比较 `internal/server/ui/` 的文件清单和内容，再执行 Go 检查。React 在不同机器上可能把同一份页面数据拆成不同长度的内联脚本块；校验只合并相邻的 Flight 数据块后比较，其他 HTML 和所有 JS/CSS 等资源仍严格比对。实际嵌入文件保持 Next 原始输出。
+
+另外三个构建回归用例验证 Flight 分块差异可被接受，而真实 HTML / 数据改动仍会被识别。
 
 测试覆盖首次订阅、错误状态、节点搜索、地址复制、凭据遮挡、读取失败保护、StrictMode 请求取消，以及操作成功时遇到慢后台刷新。Go 资源测试会从实际 HTML 解析 JS/CSS 路径并验证响应，缺失资源必须返回 404，旧 `/panel/` 跳回唯一页面。
 

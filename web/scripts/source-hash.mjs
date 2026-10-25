@@ -13,6 +13,6 @@ export function sourceHash() {
     }
   };
   visit('src');
-  for(const file of ['package.json','package-lock.json','next.config.ts','postcss.config.mjs','components.json','scripts/export.mjs','scripts/source-hash.mjs']) {hash.update(file);hash.update(readFileSync(path.join(root,file)));}
+  for(const file of ['package.json','package-lock.json','next.config.ts','postcss.config.mjs','components.json','scripts/export.mjs','scripts/source-hash.mjs','scripts/normalize-html.mjs','scripts/verify-export.mjs']) {hash.update(file);hash.update(readFileSync(path.join(root,file)));}
   return hash.digest('hex').slice(0,20);
 }
