@@ -1,0 +1,79 @@
+--- a/log/log.go
++++ b/log/log.go
+@@ -3,6 +3,7 @@
+ import (
+ 	"fmt"
+ 	"os"
++	"sync/atomic"
+ 
+ 	"github.com/metacubex/mihomo/common/observable"
+ 
+@@ -10,9 +11,9 @@
+ )
+ 
+ var (
+-	logCh  = make(chan Event)
+-	source = observable.NewObservable[Event](logCh)
+-	level  = INFO
++	logCh        = make(chan Event)
++	source       = observable.NewObservable[Event](logCh)
++	level  int32 = int32(INFO)
+ )
+ 
+ func init() {
+@@ -72,15 +73,15 @@
+ }
+ 
+ func Level() LogLevel {
+-	return level
++	return LogLevel(atomic.LoadInt32(&level))
+ }
+ 
+ func SetLevel(newLevel LogLevel) {
+-	level = newLevel
++	atomic.StoreInt32(&level, int32(newLevel))
+ }
+ 
+ func print(data Event) {
+-	if data.LogLevel < level {
++	if data.LogLevel < Level() {
+ 		return
+ 	}
+ 
+--- a/listener/mixed/mixed.go
++++ b/listener/mixed/mixed.go
+@@ -4,6 +4,7 @@
+ 	"context"
+ 	"errors"
+ 	"net"
++	"sync/atomic"
+ 
+ 	"github.com/metacubex/mihomo/adapter/inbound"
+ 	N "github.com/metacubex/mihomo/common/net"
+@@ -26,7 +27,7 @@
+ type Listener struct {
+ 	listener net.Listener
+ 	addr     string
+-	closed   bool
++	closed   atomic.Bool
+ }
+ 
+ // RawAddress implements C.Listener
+@@ -41,7 +42,7 @@
+ 
+ // Close implements C.Listener
+ func (l *Listener) Close() error {
+-	l.closed = true
++	l.closed.Store(true)
+ 	return l.listener.Close()
+ }
+ 
+@@ -123,7 +124,7 @@
+ 		for {
+ 			c, err := ml.listener.Accept()
+ 			if err != nil {
+-				if ml.closed {
++				if ml.closed.Load() {
+ 					break
+ 				}
+ 				continue

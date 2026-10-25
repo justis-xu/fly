@@ -142,3 +142,6 @@ require (
 	golang.org/x/tools v0.24.0 // indirect
 	google.golang.org/protobuf v1.34.2 // indirect
 )
+
+// v1.19.33 with two atomic-state concurrency fixes; see third_party/README.md.
+replace github.com/metacubex/mihomo => ./third_party/mihomo

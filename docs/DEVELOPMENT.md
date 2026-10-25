@@ -96,3 +96,5 @@ node web/scripts/preview.mjs 7900 --fresh
 - 任何测试输出、日志、截图和提交前都要检查订阅 URL；`~/.fly/` 不在仓库里。
 
 [返回首页](../README.md) · [QA](QA.md)
+
+内核并发检查补充：远端发现 v1.19.33 的日志等级和混合监听器关闭状态存在并发读写。仓库现保存同版本源码，通过本地 replace 应用两个原子状态补丁；安装不需额外工具。已用固定输入复现日志竞争，并连续 10 轮验证核心并发测试通过。源码来源和完整差异见 [third_party/README.md](../third_party/README.md)。
