@@ -4,9 +4,12 @@ import (
 	"encoding/json"
 	"fly/internal/app"
 	"fly/internal/config"
+	"fly/internal/core"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
@@ -14,10 +17,35 @@ import (
 
 func TestSubscriptionSaveFailureKeepsOldURL(t *testing.T) {
 	source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte("proxies:\n- {name: valid, type: http, server: example.org, port: 80}\n"))
+		w.Write([]byte("proxies:\n- {name: valid, type: http, server: 127.0.0.1, port: 1}\nrules:\n- MATCH,DIRECT\n"))
 	}))
 	defer source.Close()
-	a := &app.App{Dir: t.TempDir() + "/missing", Cfg: config.Default("")}
+	if os.Geteuid() == 0 {
+		t.Skip("permission failure requires an unprivileged user")
+	}
+	dir := t.TempDir()
+	cfg := config.Default("")
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.MixedPort = listener.Addr().(*net.TCPAddr).Port
+	listener.Close()
+	if err = core.Init(t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+	defer core.StopMixed()
+	if err = config.Save(dir, cfg); err != nil {
+		t.Fatal(err)
+	}
+	if err = os.MkdirAll(filepath.Join(dir, "subscriptions"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err = os.Chmod(dir, 0555); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chmod(dir, 0700)
+	a := &app.App{Dir: dir, Cfg: cfg}
 	old := a.SubscriptionURL()
 	s := New(a, "test")
 	r := httptest.NewRequest("POST", "/api/subscription", strings.NewReader(`{"url":"`+source.URL+`"}`))

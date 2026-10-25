@@ -2,7 +2,7 @@
 2:"/_next/static/chunks/0umf92h1sb77c.js"
 3:I[39756,["$2"],"default"]
 4:I[37457,["$2"],"default"]
-8:"/_next/static/chunks/3_3_on2-0pfv3.js"
+8:"/_next/static/chunks/3ngfkikez8r5d.js"
 9:I[75170,["$2","$8"],"default"]
 a:I[97367,["$2"],"OutletBoundary"]
 b:"$Sreact.suspense"
@@ -12,8 +12,8 @@ f:I[97367,["$2"],"$e"]
 11:I[97367,["$2"],"$10"]
 :HL["/_next/static/chunks/1u8-qlw5mj089.css","style"]
 6:X
-7:[["children",{"s":"__PAGE__","h":160,"d":{"r":["$","$1","c",{"children":[["$","$L9",null,{}],[["$","script","script-0",{"src":"/_next/static/chunks/3_3_on2-0pfv3.js","async":true}]],["$","$La",null,{"children":["$","$b",null,{"name":"Next.MetadataOutlet","children":"$@c"}]}]]}],"p":"$@d","v":null,"s":"$6"}}]]
-0:{"t":{"t":{"s":"","h":80,"d":{"r":["$","$1","c",{"children":[[["$","link","0",{"rel":"stylesheet","href":"/_next/static/chunks/1u8-qlw5mj089.css","precedence":"next"}],["$","script","script-0",{"src":"/_next/static/chunks/0umf92h1sb77c.js","async":true}]],["$","html",null,{"lang":"zh-CN","children":["$","body",null,{"children":["$","$L3",null,{"parallelRouterKey":"children","template":["$","$L4",null,{}],"notFound":[["$","main",null,{"className":"dashboard","children":[["$","h1",null,{"className":"text-xl font-semibold","children":"这个页面不存在"}],["$","p",null,{"className":"mt-3 text-muted-foreground","children":"请回到 fly 管理页面继续使用。"}],["$","a",null,{"href":"/","className":"mt-5 inline-block text-primary","children":"返回 fly"}]]}],[]]}]}]}]]}],"p":"$@5","v":null,"s":"$6"},"c":"$Q7"},"h":{"r":["$","$1","h",{"children":[null,["$","$Lf",null,{"children":[["$","meta","0",{"charSet":"utf-8"}],["$","meta","1",{"name":"viewport","content":"width=device-width, initial-scale=1"}]]}],["$","$L11",null,{"children":[["$","div",null,{"hidden":true,"children":["$","$b",null,{"name":"Next.Metadata","children":[["$","title","0",{"children":"fly · 本地代理服务器"}],["$","meta","1",{"name":"description","content":"配合 Proxy Switcher 使用的本地代理服务器"}]]}]}],null]}],null]}],"p":"$@12","v":null,"s":"$6"}},"a":"$@13","u":"$@14","b":"180c232c522466e0108d"}
+7:[["children",{"s":"__PAGE__","h":160,"d":{"r":["$","$1","c",{"children":[["$","$L9",null,{}],[["$","script","script-0",{"src":"/_next/static/chunks/3ngfkikez8r5d.js","async":true}]],["$","$La",null,{"children":["$","$b",null,{"name":"Next.MetadataOutlet","children":"$@c"}]}]]}],"p":"$@d","v":null,"s":"$6"}}]]
+0:{"t":{"t":{"s":"","h":80,"d":{"r":["$","$1","c",{"children":[[["$","link","0",{"rel":"stylesheet","href":"/_next/static/chunks/1u8-qlw5mj089.css","precedence":"next"}],["$","script","script-0",{"src":"/_next/static/chunks/0umf92h1sb77c.js","async":true}]],["$","html",null,{"lang":"zh-CN","children":["$","body",null,{"children":["$","$L3",null,{"parallelRouterKey":"children","template":["$","$L4",null,{}],"notFound":[["$","main",null,{"className":"dashboard","children":[["$","h1",null,{"className":"text-xl font-semibold","children":"这个页面不存在"}],["$","p",null,{"className":"mt-3 text-muted-foreground","children":"请回到 fly 管理页面继续使用。"}],["$","a",null,{"href":"/","className":"mt-5 inline-block text-primary","children":"返回 fly"}]]}],[]]}]}]}]]}],"p":"$@5","v":null,"s":"$6"},"c":"$Q7"},"h":{"r":["$","$1","h",{"children":[null,["$","$Lf",null,{"children":[["$","meta","0",{"charSet":"utf-8"}],["$","meta","1",{"name":"viewport","content":"width=device-width, initial-scale=1"}]]}],["$","$L11",null,{"children":[["$","div",null,{"hidden":true,"children":["$","$b",null,{"name":"Next.Metadata","children":[["$","title","0",{"children":"fly · 本地代理服务器"}],["$","meta","1",{"name":"description","content":"配合 Proxy Switcher 使用的本地代理服务器"}]]}]}],null]}],null]}],"p":"$@12","v":null,"s":"$6"}},"a":"$@13","u":"$@14","b":"2762f94d50d7640f5b8d"}
 c:null
 6:300
 14:true

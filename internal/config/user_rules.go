@@ -103,9 +103,6 @@ func RuleLines(rules []UserRule, target string) []string {
 		typ := map[string]string{"domain": "DOMAIN", "domain_suffix": "DOMAIN-SUFFIX", "ip_cidr": "IP-CIDR"}[r.Match]
 		action := map[string]string{"direct": "DIRECT", "reject": "REJECT", "proxy": target}[r.Action]
 		line := typ + "," + r.Value + "," + action
-		if r.Match == "ip_cidr" {
-			line += ",no-resolve"
-		}
 		out = append(out, line)
 	}
 	return out

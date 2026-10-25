@@ -1,4 +1,4 @@
-export const redact=(text:string)=>text.replace(/https?:\/\/[^\s"<>]+/g,'[订阅或资源地址]');
+export const redact=(text:string)=>text.replace(/[a-z][a-z0-9+.-]*:\/\/[^\s"<>]+/gi,'[订阅或资源地址]');
 
 export async function api<T>(path:string, options:RequestInit = {}):Promise<T> {
   const response = await fetch(`/api/${path}`, { cache:'no-store', ...options });

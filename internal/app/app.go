@@ -3,7 +3,6 @@ package app
 import (
 	"bytes"
 	"context"
-	"fly/internal/storage"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -147,6 +146,13 @@ func parseBody(body []byte) (proxies []map[string]any, rules core.Routing, skipp
 		proxies = sub.FilterProxies(yamlProxies)
 		skipped = len(yamlProxies) - len(proxies)
 		if len(yamlRules) > 0 {
+			for i, line := range yamlRules {
+				parts := strings.Split(line, ",")
+				valid := len(parts) >= 3 || len(parts) == 2 && strings.EqualFold(strings.TrimSpace(parts[0]), "MATCH")
+				if !valid {
+					return nil, core.Routing{}, 0, fmt.Errorf("订阅第 %d 条分流规则格式不完整，请修正规则源", i+1)
+				}
+			}
 			rules.Rules = sub.RewriteRules(yamlRules, core.GroupProxy)
 			var source struct {
 				Providers map[string]map[string]any `yaml:"rule-providers"`
@@ -177,7 +183,7 @@ func (a *App) loadFromCache() error {
 	body, info, ok := sub.LoadSourceCache(a.Dir, a.sourceKey())
 	if !ok && !a.Cfg.Imported {
 		// One-time compatibility path: only a cold start of the accepted URL may migrate legacy data.
-		if _, err := os.Stat(filepath.Join(a.Dir, "subscription.json")); os.IsNotExist(err) {
+		if !sub.HasSourceCaches(a.Dir) {
 			body, info, ok = sub.LoadCache(a.Dir)
 		}
 	}
@@ -191,6 +197,10 @@ func (a *App) loadFromCache() error {
 	a.DownloadRoute = "本地文件"
 	if !a.Cfg.Imported {
 		a.DownloadRoute = "缓存"
+	}
+	if info.LegacyCache {
+		a.DownloadRoute = "旧缓存（来源未核实）"
+		a.setLastErr(a.LastErr + "；升级前旧缓存未记录来源，请联网更新订阅后确认节点")
 	}
 	return nil
 }
@@ -268,9 +278,12 @@ func (a *App) Refresh() error {
 		return err
 	}
 	if err = sub.SaveSourceCache(a.Dir, candidate.sourceKey(), candidate.cacheBody, candidate.Info); err != nil {
-		a.rollbackCore()
-		a.setLastErr("配置已加载，但缓存写入失败，请检查数据目录权限/磁盘空间")
-		return fmt.Errorf("缓存写入失败，请检查数据目录权限/磁盘空间")
+		if restoreErr := a.rollbackCore(); restoreErr != nil {
+			a.setLastErr("缓存保存失败，旧配置恢复失败，请检查端口并重新启动")
+			return fmt.Errorf("缓存保存失败，旧配置恢复失败，请检查端口并重新启动")
+		}
+		a.setLastErr("缓存保存失败，原配置已保留，请检查数据目录权限/磁盘空间")
+		return fmt.Errorf("缓存保存失败，原配置已保留，请检查数据目录权限/磁盘空间")
 	}
 	a.adopt(candidate)
 	return nil
@@ -303,6 +316,9 @@ func (a *App) ChangeSubscription(ctx context.Context, rawURL, downloadProxy stri
 	cfg.SubscriptionURL = rawURL
 	cfg.DownloadProxy = downloadProxy
 	cfg.Imported = imported != nil
+	if err := cfg.Validate(); err != nil {
+		return err
+	}
 	candidate := &App{Dir: a.Dir, Cfg: &cfg}
 	opt := candidate.fetchOptions()
 	var body []byte
@@ -338,41 +354,58 @@ func (a *App) ChangeSubscription(ctx context.Context, rawURL, downloadProxy stri
 	if ctx.Err() != nil {
 		return fmt.Errorf("操作已取消，原配置已保留")
 	}
-	// Persist only after syntax/node validation. Failed activation restores the old disk state.
-	oldDisk, diskErr := os.ReadFile(filepath.Join(a.Dir, "fly.yaml"))
-	if err = config.Save(a.Dir, &cfg); err != nil {
-		return fmt.Errorf("保存配置失败，请检查数据目录权限/磁盘空间")
-	}
-	rollback := func() {
-		if diskErr == nil {
-			_ = storage.WriteFile(filepath.Join(a.Dir, "fly.yaml"), oldDisk)
-		} else {
-			_ = os.Remove(filepath.Join(a.Dir, "fly.yaml"))
-		}
-		a.rollbackCore()
-	}
+	// Activate first. A parse/port failure never writes the replacement URL to disk.
 	if err = candidate.StartCore(); err != nil {
-		rollback()
+		a.rollbackCore()
 		return err
 	}
+	rollback := func(problem string) error {
+		if err := a.rollbackCore(); err != nil {
+			return fmt.Errorf("%s；旧内核配置恢复失败，请重新启动并检查端口", problem)
+		}
+		return fmt.Errorf("%s", problem)
+	}
+	// Bind a legacy cache to the previously accepted source before creating a different record.
+	if !sub.HasSourceCaches(a.Dir) && old.SubscriptionURL != "" && !old.Imported {
+		if legacy, meta, ok := sub.LoadCache(a.Dir); ok {
+			if err = sub.SaveSourceCache(a.Dir, old.SubscriptionURL, legacy, meta); err != nil {
+				return rollback("旧订阅缓存迁移失败，请检查磁盘空间/权限")
+			}
+		}
+	}
+	previousBody, previousInfo, previousOK := sub.LoadSourceCache(a.Dir, candidate.sourceKey())
 	if err = sub.SaveSourceCache(a.Dir, candidate.sourceKey(), body, info); err != nil {
-		rollback()
-		return fmt.Errorf("缓存保存失败，已保留原配置，请检查磁盘空间/权限")
+		return rollback("新订阅缓存保存失败，原配置已保留，请检查磁盘空间/权限")
+	}
+	// Each source has its own atomically written cache. Persisting the URL last keeps
+	// either the old or the new source recoverable even if the process stops here.
+	if err = config.Save(a.Dir, &cfg); err != nil {
+		var restoreErr error
+		if previousOK {
+			restoreErr = sub.SaveSourceCache(a.Dir, candidate.sourceKey(), previousBody, previousInfo)
+		} else {
+			restoreErr = sub.RemoveSourceCache(a.Dir, candidate.sourceKey())
+		}
+		if restoreErr != nil {
+			return rollback("配置写入失败；缓存回滚也失败，请检查磁盘空间/权限后重新启动")
+		}
+		return rollback("配置保存失败，原配置已保留，请检查数据目录权限/磁盘空间")
 	}
 	a.adopt(candidate)
 	return nil
 }
 
 // rollbackCore restores the previous runtime after an activation/persistence failure.
-func (a *App) rollbackCore() {
+func (a *App) rollbackCore() error {
 	a.mu.Lock()
 	previous := a.cfgBytes
 	a.mu.Unlock()
 	if len(previous) > 0 {
-		_ = core.Start(previous)
+		return core.Start(previous)
 	} else {
 		core.StopMixed()
 	}
+	return nil
 }
 
 func (a *App) setLastErr(s string) {

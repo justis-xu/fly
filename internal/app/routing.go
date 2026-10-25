@@ -218,7 +218,14 @@ func (a *App) prepareRuleResources(ctx context.Context) error {
 			continue
 		}
 		downloadCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
-		body, _, _, err := sub.FetchWithOptions(downloadCtx, rawURL, a.fetchOptions())
+		opt := a.fetchOptions()
+		headers, headerErr := sub.ProviderHeaders(provider["header"])
+		if headerErr != nil {
+			cancel()
+			return headerErr
+		}
+		opt.Headers = headers
+		body, _, _, err := sub.FetchWithOptions(downloadCtx, rawURL, opt)
 		cancel()
 		if err != nil {
 			if ctx.Err() != nil {

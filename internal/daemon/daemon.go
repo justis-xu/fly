@@ -1,6 +1,8 @@
 package daemon
 
 import (
+	"encoding/json"
+	"fly/internal/storage"
 	"fmt"
 	"net"
 	"os"
@@ -8,6 +10,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -17,22 +20,73 @@ const ChildArg = "--daemon-child"
 
 func pidPath(dataDir string) string { return filepath.Join(dataDir, "fly.pid") }
 
-// Running 返回守护进程 pid，0 表示未运行；顺带清理过期 pid 文件。
+type processRecord struct {
+	PID     int    `json:"pid"`
+	Started string `json:"started"`
+	Command string `json:"command"`
+}
+
+var ownership struct {
+	sync.Mutex
+	file *os.File
+}
+
+func identity(pid int) (processRecord, error) {
+	read := func(field string) (string, error) {
+		cmd := exec.Command("ps", "-ww", "-p", strconv.Itoa(pid), "-o", field+"=")
+		cmd.Env = append(os.Environ(), "LC_ALL=C")
+		b, err := cmd.Output()
+		return strings.TrimSpace(string(b)), err
+	}
+	started, err := read("lstart")
+	if err != nil {
+		return processRecord{}, err
+	}
+	command, err := read("command")
+	if err != nil || started == "" || command == "" {
+		return processRecord{}, fmt.Errorf("进程身份不可用")
+	}
+	return processRecord{pid, started, command}, nil
+}
+
+// Running checks process identity, not only PID existence. A stale PID must never authorize a kill.
 func Running(dataDir string) int {
 	b, err := os.ReadFile(pidPath(dataDir))
 	if err != nil {
 		return 0
 	}
-	pid, err := strconv.Atoi(strings.TrimSpace(string(b)))
-	if err != nil || pid <= 0 {
+	var record processRecord
+	if json.Unmarshal(b, &record) != nil {
+		// Legacy versions used only a PID and had no custom data-directory support.
+		pid, err := strconv.Atoi(strings.TrimSpace(string(b)))
+		if err != nil || pid <= 0 {
+			_ = os.Remove(pidPath(dataDir))
+			return 0
+		}
+		actual, err := identity(pid)
+		if err != nil {
+			return 0
+		}
+		suffix := " " + ChildArg
+		if !strings.HasSuffix(actual.Command, suffix) {
+			return 0
+		}
+		executable := strings.TrimSpace(strings.TrimSuffix(actual.Command, suffix))
+		current, _ := os.Executable()
+		if filepath.Base(executable) != "fly" && filepath.Base(executable) != filepath.Base(current) {
+			return 0
+		}
+		return pid
+	}
+	if record.PID <= 0 {
+		return 0
+	}
+	actual, err := identity(record.PID)
+	if err != nil || actual.Started != record.Started || actual.Command != record.Command {
 		_ = os.Remove(pidPath(dataDir))
 		return 0
 	}
-	if !alive(pid) {
-		_ = os.Remove(pidPath(dataDir))
-		return 0
-	}
-	return pid
+	return record.PID
 }
 
 func alive(pid int) bool {
@@ -44,10 +98,47 @@ func alive(pid int) bool {
 }
 
 func WritePID(dataDir string) error {
-	return os.WriteFile(pidPath(dataDir), []byte(strconv.Itoa(os.Getpid())), 0o600)
+	ownership.Lock()
+	defer ownership.Unlock()
+	if ownership.file != nil {
+		return fmt.Errorf("后台进程已持有启动锁")
+	}
+	f, err := os.OpenFile(filepath.Join(dataDir, "fly.lock"), os.O_CREATE|os.O_RDWR, 0600)
+	if err != nil {
+		return err
+	}
+	if err = syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		f.Close()
+		return fmt.Errorf("已有 fly 正在启动或运行")
+	}
+	record, err := identity(os.Getpid())
+	if err == nil {
+		var b []byte
+		b, err = json.Marshal(record)
+		if err == nil {
+			err = storage.WriteFile(pidPath(dataDir), b)
+		}
+	}
+	if err != nil {
+		f.Close()
+		return fmt.Errorf("记录后台进程身份失败：请确认 ps 可用且数据目录可写")
+	}
+	ownership.file = f
+	return nil
 }
-
-func RemovePID(dataDir string) { _ = os.Remove(pidPath(dataDir)) }
+func RemovePID(dataDir string) {
+	ownership.Lock()
+	defer ownership.Unlock()
+	b, _ := os.ReadFile(pidPath(dataDir))
+	var record processRecord
+	if json.Unmarshal(b, &record) == nil && record.PID == os.Getpid() {
+		_ = os.Remove(pidPath(dataDir))
+	}
+	if ownership.file != nil {
+		_ = ownership.file.Close()
+		ownership.file = nil
+	}
+}
 
 func portOpen(addr string) bool {
 	conn, err := net.DialTimeout("tcp", addr, time.Second)
@@ -75,7 +166,7 @@ func Detach(dataDir, adminAddr string) error {
 	defer f.Close()
 	fmt.Fprintf(f, "\n===== %s 启动 =====\n", time.Now().Format("2006-01-02 15:04:05"))
 
-	cmd := exec.Command(exe, ChildArg)
+	cmd := exec.Command(exe, ChildArg, fmt.Sprintf("--instance=%d", time.Now().UnixNano()))
 	cmd.Stdout = f
 	cmd.Stderr = f
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}

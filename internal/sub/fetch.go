@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"golang.org/x/net/http/httpguts"
 	"gopkg.in/yaml.v3"
 )
 
@@ -23,11 +24,12 @@ const fetchUA = "clash.meta/fly"
 
 // Info 来自订阅响应头 subscription-userinfo。
 type Info struct {
-	Upload    int64     `json:"upload"`
-	Download  int64     `json:"download"`
-	Total     int64     `json:"total"`
-	Expire    int64     `json:"expire"`
-	FetchedAt time.Time `json:"fetched_at"`
+	Upload      int64     `json:"upload"`
+	Download    int64     `json:"download"`
+	Total       int64     `json:"total"`
+	Expire      int64     `json:"expire"`
+	FetchedAt   time.Time `json:"fetched_at"`
+	LegacyCache bool      `json:"legacy_cache,omitempty"`
 }
 
 func (i *Info) Used() int64 { return i.Upload + i.Download }
@@ -47,6 +49,7 @@ func Fetch(rawURL string) ([]byte, *Info, error) {
 const MaxBody = 8 << 20
 
 type FetchOptions struct {
+	Headers      http.Header
 	ProxyURL     string
 	FallbackDial func(context.Context, string, string) (net.Conn, error)
 }
@@ -117,6 +120,9 @@ func FetchWithOptions(ctx context.Context, rawURL string, opt FetchOptions) ([]b
 	if err := ValidateURL(rawURL); err != nil {
 		return nil, nil, "", err
 	}
+	if err := ValidateHeaders(opt.Headers); err != nil {
+		return nil, nil, "", err
+	}
 	if err := ValidateProxy(opt.ProxyURL); err != nil {
 		return nil, nil, "", err
 	}
@@ -148,12 +154,19 @@ func FetchWithOptions(ctx context.Context, rawURL string, opt FetchOptions) ([]b
 			tr.DialContext = r.dial
 		}
 		client := &http.Client{Transport: tr, Timeout: 12 * time.Second, CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) > 0 && req.URL.Host != via[0].URL.Host {
+				for key := range opt.Headers {
+					if !strings.EqualFold(key, "User-Agent") && !strings.EqualFold(key, "Accept") {
+						req.Header.Del(key)
+					}
+				}
+			}
 			if len(via) >= 5 {
 				return fmt.Errorf("重定向过多")
 			}
 			return nil
 		}}
-		b, i, err := fetchClient(ctx, client, rawURL)
+		b, i, err := fetchClient(ctx, client, rawURL, opt.Headers)
 		tr.CloseIdleConnections()
 		if err == nil {
 			return b, i, r.name, nil
@@ -166,12 +179,18 @@ func FetchWithOptions(ctx context.Context, rawURL string, opt FetchOptions) ([]b
 	}
 	return nil, nil, "", fmt.Errorf("%s", strings.Join(failures, "；"))
 }
-func fetchClient(ctx context.Context, client *http.Client, rawURL string) ([]byte, *Info, error) {
+func fetchClient(ctx context.Context, client *http.Client, rawURL string, headers http.Header) ([]byte, *Info, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
 		return nil, nil, err
 	}
 	req.Header.Set("User-Agent", fetchUA)
+	for k, values := range headers {
+		req.Header.Del(k)
+		for _, value := range values {
+			req.Header.Add(k, value)
+		}
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, nil, err
@@ -249,7 +268,7 @@ func BodyToLinks(body []byte) (linksText string, yamlProxies []map[string]any, y
 
 var builtinPolicies = map[string]bool{
 	"DIRECT": true, "REJECT": true, "REJECT-DROP": true,
-	"PASS": true, "PASS-RULE": true, "COMPATIBLE": true, "GLOBAL": true,
+	"PASS": true, "PASS-RULE": true, "COMPATIBLE": true,
 }
 
 // RewriteRules 采用订阅自带规则：把指向订阅分组的目标改写为主选择组，
@@ -329,5 +348,60 @@ func LoadCache(dir string) (body []byte, info *Info, ok bool) {
 	if b, err := os.ReadFile(filepath.Join(dir, "sub-meta.json")); err == nil {
 		_ = yaml.Unmarshal(b, info)
 	}
+	info.LegacyCache = true
 	return body, info, true
+}
+
+func ValidateHeaders(headers http.Header) error {
+	if len(headers) > 32 {
+		return fmt.Errorf("下载请求头过多")
+	}
+	size := 0
+	for key, values := range headers {
+		if !httpguts.ValidHeaderFieldName(key) {
+			return fmt.Errorf("下载请求头名称无效")
+		}
+		switch strings.ToLower(key) {
+		case "host", "connection", "proxy-authorization", "transfer-encoding", "content-length":
+			return fmt.Errorf("订阅来源包含不支持的下载请求头")
+		}
+		for _, value := range values {
+			size += len(key) + len(value)
+			if !httpguts.ValidHeaderFieldValue(value) || size > 32768 {
+				return fmt.Errorf("下载请求头无效或过长")
+			}
+		}
+	}
+	return nil
+}
+func ProviderHeaders(value any) (http.Header, error) {
+	if value == nil {
+		return nil, nil
+	}
+	data, err := yaml.Marshal(value)
+	if err != nil {
+		return nil, fmt.Errorf("下载请求头格式无效")
+	}
+	var raw map[string]any
+	if yaml.Unmarshal(data, &raw) != nil {
+		return nil, fmt.Errorf("下载请求头格式无效")
+	}
+	headers := http.Header{}
+	for key, value := range raw {
+		switch v := value.(type) {
+		case string:
+			headers.Set(key, v)
+		case []any:
+			for _, item := range v {
+				s, ok := item.(string)
+				if !ok {
+					return nil, fmt.Errorf("下载请求头须使用文本")
+				}
+				headers.Add(key, s)
+			}
+		default:
+			return nil, fmt.Errorf("下载请求头须使用文本列表")
+		}
+	}
+	return headers, ValidateHeaders(headers)
 }

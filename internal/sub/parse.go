@@ -9,13 +9,18 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"unicode"
 )
 
-var placeholderPatterns = []string{"剩余流量", "到期", "重置", "跳转域名", "请勿连接", "官网", "流量说明", "更新订阅", "失联"}
+var placeholderPatterns = []string{"剩余流量", "套餐到期", "到期时间", "流量重置", "重置时间", "跳转域名", "请勿连接", "官网地址", "流量说明", "更新订阅", "失联请"}
 
 func isPlaceholder(name string) bool {
+	name = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(name), "ℹ️"))
+	name = strings.TrimLeftFunc(name, func(r rune) bool {
+		return unicode.IsSpace(r) || unicode.IsSymbol(r) || unicode.IsPunct(r) || unicode.IsMark(r)
+	})
 	for _, p := range placeholderPatterns {
-		if strings.Contains(name, p) {
+		if strings.HasPrefix(name, p) {
 			return true
 		}
 	}
@@ -109,7 +114,7 @@ func FilterProxies(list []map[string]any) []map[string]any {
 }
 func uniqueName(name string, seen map[string]bool) string {
 	name = strings.TrimSpace(name)
-	if builtinPolicies[name] || name == "🚀 Proxy" || name == "♻️ 自动选择" {
+	if builtinPolicies[name] || name == "GLOBAL" || name == "🚀 Proxy" || name == "♻️ 自动选择" {
 		name += " (订阅)"
 	}
 	base := name

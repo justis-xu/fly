@@ -15,6 +15,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 )
@@ -104,10 +105,10 @@ func TestEditedRulesActuallyRouteDirectProxyAndReject(t *testing.T) {
 		t.Fatal(err)
 	}
 	mixed, _ := url.Parse(fmt.Sprintf("http://127.0.0.1:%d", port))
-	request := func() error {
+	requestTo := func(address string) error {
 		tr := &http.Transport{Proxy: http.ProxyURL(mixed), DisableKeepAlives: true}
 		defer tr.CloseIdleConnections()
-		resp, err := (&http.Client{Transport: tr}).Get(target.URL)
+		resp, err := (&http.Client{Transport: tr}).Get(address)
 		if err != nil {
 			return err
 		}
@@ -121,6 +122,11 @@ func TestEditedRulesActuallyRouteDirectProxyAndReject(t *testing.T) {
 		}
 		return nil
 	}
+	request := func() error { return requestTo(target.URL) }
+	localhostURL := strings.Replace(target.URL, "127.0.0.1", "localhost", 1)
+	if err := requestTo(localhostURL); err != nil {
+		t.Fatalf("controlled hostname was unreachable before rules: %v", err)
+	}
 	for _, action := range []string{"reject", "direct", "proxy"} {
 		if err := a.SaveUserRules([]config.UserRule{{Match: "ip_cidr", Value: "127.0.0.1/32", Action: action}}); err != nil {
 			t.Fatal(err)
@@ -128,6 +134,9 @@ func TestEditedRulesActuallyRouteDirectProxyAndReject(t *testing.T) {
 		before := upstream.Load()
 		err := request()
 		if action == "reject" {
+			if requestTo(localhostURL) == nil {
+				t.Fatal("IP rule ignored the resolved destination of a hostname")
+			}
 			if err == nil {
 				t.Fatal("reject rule permitted traffic")
 			}

@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -10,6 +12,8 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"syscall"
 	"time"
 
@@ -77,7 +81,7 @@ func usage() {
   fly status     运行状态与当前节点
   fly ui         打开控制台页面
   fly update     立即刷新订阅并热重载
-  fly init       查看/修改配置（--url <订阅地址> --port <代理端口>）
+  fly init       查看/修改配置（--url <订阅地址> --port <代理端口> --admin <本机管理地址>）
 `)
 }
 
@@ -174,7 +178,15 @@ func cmdRestart() {
 
 func cmdUI() {
 	a := mustApp()
-	_ = exec.Command("open", "http://"+a.Cfg.AdminAddr).Start()
+	address := "http://" + a.Cfg.AdminAddr
+	fmt.Println("管理网页:", address)
+	opener := "open"
+	if runtime.GOOS != "darwin" {
+		opener = "xdg-open"
+	}
+	if err := exec.Command(opener, address).Start(); err != nil {
+		fmt.Println("无法自动打开，请把上方地址复制到浏览器。")
+	}
 }
 
 func getJSON(url string, out any) error {
@@ -306,36 +318,68 @@ func orNA(s string) string {
 
 func cmdInit() {
 	fs := flag.NewFlagSet("init", flag.ExitOnError)
-	url := fs.String("url", "", "订阅地址")
+	source := fs.String("url", "", "验证并更换订阅地址（推荐使用管理网页）")
 	port := fs.Int("port", 0, "本地代理端口")
+	admin := fs.String("admin", "", "本机管理地址，例如 127.0.0.1:7889")
 	_ = fs.Parse(os.Args[2:])
-
 	a := mustApp()
-	if *url != "" {
-		if err := sub.ValidateURL(*url); err != nil {
-			fatal(err)
-		}
-		a.Cfg.Imported = false
-		a.Cfg.SubscriptionURL = *url
+	active := daemon.Running(a.Dir) != 0
+	if active && (*port != 0 && *port != a.Cfg.MixedPort || *admin != "" && *admin != a.Cfg.AdminAddr) {
+		fatal(fmt.Errorf("请先运行 fly stop，再修改代理或管理端口；修改后运行 fly start"))
 	}
 	if *port != 0 {
 		a.Cfg.MixedPort = *port
 	}
-	if *url != "" || *port != 0 {
+	if *admin != "" {
+		a.Cfg.AdminAddr = *admin
+	}
+	if err := a.Cfg.Validate(); err != nil {
+		fatal(err)
+	}
+	if *source != "" {
+		*source = strings.TrimSpace(*source)
+		if err := sub.ValidateURL(*source); err != nil {
+			fatal(err)
+		}
+		if active {
+			data, _ := json.Marshal(map[string]string{"url": *source, "download_proxy": a.Cfg.DownloadProxy})
+			client := &http.Client{Transport: localClient.Transport, Timeout: 120 * time.Second}
+			resp, err := client.Post("http://"+a.Cfg.AdminAddr+"/api/subscription", "application/json", bytes.NewReader(data))
+			if err != nil {
+				fatal(fmt.Errorf("无法完成订阅验证，请在管理网页重试"))
+			}
+			body, _ := io.ReadAll(io.LimitReader(resp.Body, 8192))
+			resp.Body.Close()
+			if resp.StatusCode >= 300 {
+				fatal(fmt.Errorf("%s", sub.Redact(string(body))))
+			}
+			loaded, err := config.Load(a.Dir)
+			if err != nil {
+				fatal(err)
+			}
+			a.Cfg = loaded
+		} else {
+			if err := core.Init(a.Dir); err != nil {
+				fatal(err)
+			}
+			defer core.StopMixed()
+			if err := a.ChangeSubscription(context.Background(), *source, a.Cfg.DownloadProxy, nil); err != nil {
+				fatal(err)
+			}
+		}
+		fmt.Println("订阅已验证并保存；节点可达性请到管理网页测试。")
+	} else if *port != 0 || *admin != "" {
 		if err := config.Save(a.Dir, a.Cfg); err != nil {
 			fatal(err)
 		}
 		fmt.Println("配置已保存")
 	}
 	fmt.Printf("配置文件: %s\n", filepath.Join(a.Dir, "fly.yaml"))
-	fmt.Printf("订阅来源: %s\n", func() string {
-		if a.Cfg.Imported {
-			return "本地导入"
-		}
-		if a.Cfg.SubscriptionURL != "" {
-			return "已设置（管理页可查看）"
-		}
-		return "尚未设置"
-	}())
-	fmt.Printf("代理端口: %d\n", a.Cfg.MixedPort)
+	description := "尚未设置"
+	if a.Cfg.Imported {
+		description = "本地导入"
+	} else if a.Cfg.SubscriptionURL != "" {
+		description = "已设置（管理页可查看）"
+	}
+	fmt.Printf("订阅来源: %s\n代理端口: %d\n管理网页: http://%s\n", description, a.Cfg.MixedPort, a.Cfg.AdminAddr)
 }

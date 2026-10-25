@@ -5,12 +5,12 @@ import (
 	"fly/internal/config"
 	"fly/internal/core"
 	"fly/internal/sub"
+	"fmt"
 	"gopkg.in/yaml.v3"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"path/filepath"
 	"testing"
 )
 
@@ -80,8 +80,8 @@ func TestImportOfflineRestartIsIsolated(t *testing.T) {
 	if err := b.ChangeSubscription(context.Background(), "", "", []byte("garbage")); err == nil {
 		t.Fatal("invalid import accepted")
 	}
-	if _, err := os.Stat(filepath.Join(dir, "subscription.json")); err != nil {
-		t.Fatal(err)
+	if cached, _, ok := sub.LoadSourceCache(dir, "local-import"); !ok || string(cached) != string(body) {
+		t.Fatal("accepted local import cache was lost")
 	}
 	// Close the test listener without relying on a real user's configuration.
 	cfg := a.cfgBytes
@@ -158,5 +158,67 @@ func TestUserRulesSurviveRefreshAndInvalidSave(t *testing.T) {
 	_ = yaml.Unmarshal(b.cfgBytes, &built)
 	if built.Rules[0] != "DOMAIN,example.org,REJECT" {
 		t.Fatal("restart lost overrides")
+	}
+}
+
+func TestMalformedSubscriptionRuleIsNotSilentlyDiscarded(t *testing.T) {
+	body := []byte("proxies:\n- {name: valid, type: http, server: 127.0.0.1, port: 1}\nrules:\n- DOMAIN,example.org\n")
+	if _, _, _, err := parseBody(body); err == nil {
+		t.Fatal("malformed rule silently became a catch-all proxy rule")
+	}
+}
+
+func TestDiskSaveFailureRestoresLiveSourceAndItsCache(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("permission failure requires an unprivileged user")
+	}
+	source := func(name string) *httptest.Server {
+		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			fmt.Fprintf(w, "proxies:\n- {name: %s, type: http, server: 127.0.0.1, port: 1}\nrules:\n- MATCH,DIRECT\n", name)
+		}))
+	}
+	old, next := source("old-node"), source("new-node")
+	defer old.Close()
+	defer next.Close()
+	dir := t.TempDir()
+	cfg := config.Default("")
+	cfg.SubscriptionURL = old.URL
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.MixedPort = listener.Addr().(*net.TCPAddr).Port
+	listener.Close()
+	defer core.StopMixed()
+	if err = config.Save(dir, cfg); err != nil {
+		t.Fatal(err)
+	}
+	a := &App{Dir: dir, Cfg: cfg}
+	if err = a.Refresh(); err != nil {
+		t.Fatal(err)
+	}
+	if err = os.Chmod(dir, 0555); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chmod(dir, 0700)
+	if err = a.ChangeSubscription(context.Background(), next.URL, "", nil); err == nil {
+		t.Fatal("unwritable config accepted")
+	}
+	persisted, err := config.Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pinned, err := core.SelectedProxy()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if persisted.SubscriptionURL != old.URL || a.SubscriptionURL() != old.URL || pinned.Name() != "old-node" {
+		t.Fatal("failed persistence changed live or saved source")
+	}
+	if _, _, ok := sub.LoadSourceCache(dir, old.URL); !ok {
+		t.Fatal("old source cache destroyed")
+	}
+	if _, _, ok := sub.LoadSourceCache(dir, next.URL); ok {
+		t.Fatal("failed transaction retained a new accepted-source cache")
 	}
 }

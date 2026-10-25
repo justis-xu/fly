@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -122,5 +123,25 @@ func TestColdStartFallsBackAfterInvalidCoreConfig(t *testing.T) {
 	}
 	if a.Nodes != 1 || a.LastErr == "" || a.Starting() {
 		t.Fatalf("cached startup lost: nodes=%d warning=%q starting=%v", a.Nodes, a.LastErr, a.Starting())
+	}
+}
+
+func TestLegacyCacheDoesNotClaimVerifiedSource(t *testing.T) {
+	source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { http.Error(w, "offline", 503) }))
+	defer source.Close()
+	dir := t.TempDir()
+	cfg := config.Default("")
+	cfg.SubscriptionURL = source.URL
+	cfg.MixedPort = 0
+	body := []byte("proxies:\n- {name: legacy, type: http, server: 127.0.0.1, port: 1}\nrules:\n- MATCH,DIRECT\n")
+	if err := os.WriteFile(filepath.Join(dir, "sub-cache.txt"), body, 0600); err != nil {
+		t.Fatal(err)
+	}
+	a := &App{Dir: dir, Cfg: cfg}
+	if err := a.Initialize(); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(a.LastErr, "旧缓存") || !strings.Contains(a.LastErr, "来源") {
+		t.Fatalf("unverified legacy cache claimed source identity: %s", a.LastErr)
 	}
 }

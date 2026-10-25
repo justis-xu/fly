@@ -6,3 +6,5 @@
 /web/out/
 /web/*.tsbuildinfo
 /web/coverage/
+
+**/__pycache__/

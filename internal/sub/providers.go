@@ -38,6 +38,7 @@ func ExpandProviders(ctx context.Context, body []byte, opt FetchOptions) ([]byte
 	for _, name := range keys {
 		b, _ := yaml.Marshal(raw[name])
 		var p struct {
+			Header   any              `yaml:"header"`
 			Type     string           `yaml:"type"`
 			URL      string           `yaml:"url"`
 			Payload  []map[string]any `yaml:"payload"`
@@ -53,7 +54,13 @@ func ExpandProviders(ctx context.Context, body []byte, opt FetchOptions) ([]byte
 		case "inline":
 			list = p.Payload
 		case "http":
-			content, _, _, err := FetchWithOptions(ctx, p.URL, opt)
+			providerOptions := opt
+			headers, err := ProviderHeaders(p.Header)
+			if err != nil {
+				return nil, err
+			}
+			providerOptions.Headers = headers
+			content, _, _, err := FetchWithOptions(ctx, p.URL, providerOptions)
 			if err != nil {
 				return nil, fmt.Errorf("节点来源下载失败：%w", err)
 			}
@@ -119,7 +126,7 @@ func ExpandProviders(ctx context.Context, body []byte, opt FetchOptions) ([]byte
 	return result, nil
 }
 
-var secretURL = regexp.MustCompile(`(?i)(?:https?|socks5h?)://[^\s"'<>]+`)
+var secretURL = regexp.MustCompile(`(?i)[a-z][a-z0-9+.-]*://[^\s"'<>]+`)
 
 func Redact(message string) string {
 	return secretURL.ReplaceAllString(strings.TrimSpace(message), "[资源地址]")

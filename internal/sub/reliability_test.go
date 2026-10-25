@@ -109,3 +109,47 @@ func TestProviderHTTPIsExpandedAndFilterApplied(t *testing.T) {
 		t.Fatal("expanded cache still depends on provider URL")
 	}
 }
+
+func TestHTTPProviderPreservesAuthenticationHeaders(t *testing.T) {
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer demo" {
+			http.Error(w, "auth", 401)
+			return
+		}
+		w.Write([]byte("proxies:\n- {name: provided, type: http, server: 127.0.0.1, port: 1}\n"))
+	}))
+	defer provider.Close()
+	body := []byte("proxy-providers:\n  example:\n    type: http\n    url: " + provider.URL + "\n    header:\n      Authorization: ['Bearer demo']\n")
+	expanded, err := ExpandProviders(context.Background(), body, FetchOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, nodes, _ := BodyToLinks(expanded)
+	if len(nodes) != 1 {
+		t.Fatalf("authenticated provider lost: %s", expanded)
+	}
+}
+
+func TestReplacingSourcePreservesEachSourcesOwnLastGoodCache(t *testing.T) {
+	dir := t.TempDir()
+	if err := SaveSourceCache(dir, "https://a.example/sub", []byte("source-a"), &Info{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveSourceCache(dir, "https://b.example/sub", []byte("source-b"), &Info{}); err != nil {
+		t.Fatal(err)
+	}
+	if b, _, ok := LoadSourceCache(dir, "https://a.example/sub"); !ok || string(b) != "source-a" {
+		t.Fatal("switching sources destroyed the old source's last good cache")
+	}
+}
+
+func TestOrdinaryNodeNamesAreNotMistakenForAccountMetadata(t *testing.T) {
+	nodes := []map[string]any{}
+	for _, name := range []string{"官网香港专线", "永久不到期-日本", "ℹ️ 剩余流量：10 GB"} {
+		nodes = append(nodes, map[string]any{"name": name, "type": "http", "server": "127.0.0.1", "port": 1})
+	}
+	got := FilterProxies(nodes)
+	if len(got) != 2 || got[0]["name"] != "官网香港专线" || got[1]["name"] != "永久不到期-日本" {
+		t.Fatalf("valid nodes filtered by ordinary words: %v", got)
+	}
+}
