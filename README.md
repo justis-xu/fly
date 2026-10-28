@@ -6,6 +6,8 @@
 
 fly 不附带节点或订阅。你提供自己的订阅，插件把浏览器请求交给 fly，fly 再按规则直连或使用你所选的节点。不设置系统代理，不启用 TUN。
 
+[▶ 观看 34 秒宣传视频](docs/videos/fly-promo-v2.mp4)
+
 ![fly 管理页，节点和订阅信息均为演示数据](docs/images/03-dashboard.jpg)
 
 ## 第一次用，从这里开始
